@@ -5,7 +5,7 @@ FINAL_CFLAGS=$(STD) $(CFLAGS) -I./include -I./
 
 CTRIP_CC=$(CC) $(FINAL_CFLAGS)
 XREDIS_GTID_LIB=lib/libgtid.a
-XREDIS_GTID_OBJ=gtid.o zmalloc.o util.o
+XREDIS_GTID_OBJ=gtid.o util.o
 AR=ar
 ARFLAGS=rcu
 DEBUG=-g -ggdb
