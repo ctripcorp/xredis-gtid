@@ -16,9 +16,9 @@ INSTALL_DIR?=$(PREFIX)/bin
 INSTALL=cp -rf
 
 
-%.o: %.c 
+%.o: %.c
 	echo $(CTRIP_CC)
-	$(CTRIP_CC) $(DEBUG) -MMD -o $@ -c $< -DXREDIS_GTID_TEST
+	$(CTRIP_CC) $(DEBUG) -MMD -o $@ -c $<
 
 
 $(XREDIS_GTID_LIB): $(XREDIS_GTID_OBJ)
@@ -32,8 +32,8 @@ clean:
 	rm -rf $(XREDIS_GTID_LIB) $(XREDIS_GTID_OBJ) ./gtid_test.o
 	rm -rf gtid_test debug
 
-test:  $(XREDIS_GTID_LIB) ./gtid_test.o	
-	$(CTRIP_CC)  -g -ggdb  -o  gtid_test  gtid_test.o ./lib/libgtid.a -lm -ldl -DXREDIS_GTID_TEST
+test:  $(XREDIS_GTID_LIB) ./gtid_test.o
+	$(CTRIP_CC)  -g -ggdb  -o  gtid_test  gtid_test.o ./lib/libgtid.a -lm -ldl
 	./gtid_test
 
 install: all
