@@ -3,7 +3,7 @@
 #include <limits.h>
 #include "util.h"
 #include "gtid.h"
-#include "zmalloc.h"
+#include "gtid_malloc.h"
 
 /* util api */
 size_t writeBuf(char* buf, const char* src, size_t len) {
@@ -12,14 +12,14 @@ size_t writeBuf(char* buf, const char* src, size_t len) {
 }
 
 char* stringNew(const char* src, int len, int max) {
-    char* str = zmalloc(max + 1);
+    char* str = gtid_malloc(max + 1);
     writeBuf(str, src, len);
     str[len] = '\0';
     return str;
 }
 
 void stringFree(char* str) {
-    zfree(str);
+    gtid_free(str);
 }
 
 gtidInterval *gtidIntervalNew(rpl_gno gno) {
@@ -35,11 +35,11 @@ gtidInterval *gtidIntervalDump(gtidInterval* gtid_interval) {
 }
 
 void gtidIntervalFree(gtidInterval* interval) {
-    zfree(interval);
+    gtid_free(interval);
 }
 
 gtidInterval *gtidIntervalNewRange(rpl_gno start, rpl_gno end) {
-    gtidInterval *interval = zmalloc(sizeof(*interval));
+    gtidInterval *interval = gtid_malloc(sizeof(*interval));
     interval->gno_start = start;
     interval->gno_end = end;
     interval->next = NULL;
@@ -86,7 +86,7 @@ uuidSet *uuidSetNew(const char *rpl_sid, size_t rpl_sid_len, rpl_gno gno) {
 }
 
 uuidSet *uuidSetNewRange(const char *rpl_sid, size_t rpl_sid_len, rpl_gno start, rpl_gno end) {
-    uuidSet *uuid_set = zmalloc(sizeof(*uuid_set));
+    uuidSet *uuid_set = gtid_malloc(sizeof(*uuid_set));
     uuid_set->rpl_sid = stringNew(rpl_sid, rpl_sid_len, rpl_sid_len);
     uuid_set->intervals = gtidIntervalNewRange(start, end);
     uuid_set->next = NULL;
@@ -98,10 +98,10 @@ void uuidSetFree(uuidSet* uuid_set) {
     gtidInterval *cur = uuid_set->intervals;
     while(cur != NULL) {
         gtidInterval *next = cur->next;
-        zfree(cur);
+        gtid_free(cur);
         cur = next;
     }
-    zfree(uuid_set);
+    gtid_free(uuid_set);
 }
 
 uuidSet *uuidSetDump(uuidSet* uuid_set) {
@@ -125,7 +125,7 @@ uuidSet *uuidSetDecode(char* uuid_set_str, int len) {
     for(int i = 0; i < len; i++) {
         if(uuid_set_str[i] == colon[0]) {
             if(uuid_set == NULL) {
-                uuid_set = zmalloc(sizeof(*uuid_set));
+                uuid_set = gtid_malloc(sizeof(*uuid_set));
                 uuid_set->rpl_sid = stringNew(uuid_set_str, i, i);
                 uuid_set->intervals = NULL;
                 uuid_set->next = NULL;
@@ -360,7 +360,7 @@ void uuidSetRaise(uuidSet *uuid_set, rpl_gno watermark) {
         if (watermark > cur->gno_end + 1) {
             gtidInterval *temp = cur;
             cur = cur->next;
-            zfree(temp);
+            gtid_free(temp);
             continue;
         }
 
@@ -374,7 +374,7 @@ void uuidSetRaise(uuidSet *uuid_set, rpl_gno watermark) {
             if (watermark == cur->next->gno_start - 1) {
                 gtidInterval *prev = cur;
                 cur = cur->next;
-                zfree(prev);
+                gtid_free(prev);
                 cur->gno_start = 1;
                 break;
             } else {
@@ -453,7 +453,7 @@ int uuidSetAppendUuidSet(uuidSet* uuid_set, uuidSet* other) {
 }
 
 gtidSet* gtidSetNew() {
-    gtidSet *gtid_set = zmalloc(sizeof(*gtid_set));
+    gtidSet *gtid_set = gtid_malloc(sizeof(*gtid_set));
     gtid_set->uuid_sets = NULL;
     gtid_set->tail = NULL;
     return gtid_set;
@@ -467,7 +467,7 @@ void gtidSetFree(gtidSet *gtid_set) {
         uuidSetFree(cur);
         cur = next;
     }
-    zfree(gtid_set);
+    gtid_free(gtid_set);
 }
 
 void gtidSetAppendUuidSet(gtidSet *gtid_set, uuidSet *uuid_set) {

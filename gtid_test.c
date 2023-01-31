@@ -4,7 +4,7 @@
 #include <string.h>
 #include "testhelp.h"
 #include "limits.h"
-#include "zmalloc.h"
+#include "gtid_malloc.h"
 #include "util.h"
 
 /* 43 = 21(long long) + 1(-) + 21(long long) */
