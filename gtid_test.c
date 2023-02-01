@@ -19,25 +19,7 @@
     }								                    \
 } while (0)
 
-size_t writeBuf(char* buf, const char* src, size_t len);
-char* stringNew(const char* src, int len, int max);
-void stringFree(char* str);
 void gtidSetAppendUuidSet(gtidSet *gtid_set, uuidSet *uuid_set);
-
-int test_writeBuf() {
-    char A[100];
-    size_t len = writeBuf(A, "12345", 3);
-    assert(len == 3);
-    assert(strncmp(A, "123", len) == 0);
-    return 1;
-}
-
-int test_stringNew() {
-    char* str = stringNew("123", 3, 10);
-    assert(strlen(str) == 3);
-    stringFree(str);
-    return 1;
-}
 
 int test_gtidSetAppendUuidSet() {
     gtidSet* gtid_set = gtidSetNew();
@@ -52,60 +34,60 @@ int test_gtidSetAppendUuidSet() {
 
 int test_gtidIntervalNew() {
     gtidInterval* interval = gtidIntervalNew(1);
-    assert(interval->gno_start == 1);
-    assert(interval->gno_end == 1);
+    assert(interval->start == 1);
+    assert(interval->end == 1);
     assert(interval->next == NULL);
     gtidIntervalFree(interval);
 
     interval = gtidIntervalNew(-__LONG_LONG_MAX__);
-    assert(interval->gno_start == -__LONG_LONG_MAX__);
-    assert(interval->gno_end == -__LONG_LONG_MAX__);
+    assert(interval->start == -__LONG_LONG_MAX__);
+    assert(interval->end == -__LONG_LONG_MAX__);
     assert(interval->next == NULL);
     gtidIntervalFree(interval);
 
     interval = gtidIntervalNew(__LONG_LONG_MAX__);
-    assert(interval->gno_start == __LONG_LONG_MAX__);
-    assert(interval->gno_end == __LONG_LONG_MAX__);
+    assert(interval->start == __LONG_LONG_MAX__);
+    assert(interval->end == __LONG_LONG_MAX__);
     assert(interval->next == NULL);
     return 1;
 }
 
 int test_gtidIntervalNewRange() {
     gtidInterval* interval = gtidIntervalNewRange(1, 10);
-    assert(interval->gno_start == 1);
-    assert(interval->gno_end == 10);
+    assert(interval->start == 1);
+    assert(interval->end == 10);
     assert(interval->next == NULL);
     gtidIntervalFree(interval);
 
     interval = gtidIntervalNewRange(-__LONG_LONG_MAX__, __LONG_LONG_MAX__);
-    assert(interval->gno_start == -__LONG_LONG_MAX__);
-    assert(interval->gno_end == __LONG_LONG_MAX__);
+    assert(interval->start == -__LONG_LONG_MAX__);
+    assert(interval->end == __LONG_LONG_MAX__);
     assert(interval->next == NULL);
     gtidIntervalFree(interval);
     return 1;
 }
 
-int test_gtidIntervalDump() {
+int test_gtidIntervalDup() {
     gtidInterval* src = gtidIntervalNewRange(1,2);
     src->next = gtidIntervalNewRange(4,5);
-    gtidInterval* dump = gtidIntervalDump(src);
-    assert(dump->gno_start == 1);
-    assert(dump->gno_end == 2);
-    assert(dump->next->gno_start == 4);
-    assert(dump->next->gno_end == 5);
+    gtidInterval* dump = gtidIntervalDup(src);
+    assert(dump->start == 1);
+    assert(dump->end == 2);
+    assert(dump->next->start == 4);
+    assert(dump->next->end == 5);
     return 1;
 }
 
 int test_gtidIntervalDecode() {
     gtidInterval* interval = gtidIntervalDecode("7", 1);
-    assert(interval->gno_start == 7);
-    assert(interval->gno_end == 7);
+    assert(interval->start == 7);
+    assert(interval->end == 7);
     assert(interval->next == NULL);
     gtidIntervalFree(interval);
 
     interval = gtidIntervalDecode("1-9", 3);
-    assert(interval->gno_start == 1);
-    assert(interval->gno_end == 9);
+    assert(interval->start == 1);
+    assert(interval->end == 9);
     assert(interval->next == NULL);
     gtidIntervalFree(interval);
 
@@ -139,45 +121,45 @@ int test_gtidIntervalEncode() {
 
 int test_uuidSetNew() {
     uuidSet* uuid_set = uuidSetNew("A", 1, 10);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
-    assert(uuid_set->intervals->gno_start == 10);
-    assert(uuid_set->intervals->gno_end == 10);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
+    assert(uuid_set->intervals->start == 10);
+    assert(uuid_set->intervals->end == 10);
     uuidSetFree(uuid_set);
 
     uuid_set = uuidSetNew("A12345", 1, 10);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
-    assert(uuid_set->intervals->gno_start == 10);
-    assert(uuid_set->intervals->gno_end == 10);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
+    assert(uuid_set->intervals->start == 10);
+    assert(uuid_set->intervals->end == 10);
     uuidSetFree(uuid_set);
     return 1;
 }
 
 int test_uuidSetNewRange() {
     uuidSet* uuid_set = uuidSetNewRange("A", 1, 1, 100);
-    memcmp(uuid_set->rpl_sid, "A\0", 2);
-    assert(uuid_set->intervals->gno_start == 1);
-    assert(uuid_set->intervals->gno_end == 100);
+    memcmp(uuid_set->sid, "A\0", 2);
+    assert(uuid_set->intervals->start == 1);
+    assert(uuid_set->intervals->end == 100);
     uuidSetFree(uuid_set);
 
     uuid_set = uuidSetNewRange("A12345", 1, 1, 100);
-    memcmp(uuid_set->rpl_sid, "A\0", 2);
-    assert(uuid_set->intervals->gno_start == 1);
-    assert(uuid_set->intervals->gno_end == 100);
+    memcmp(uuid_set->sid, "A\0", 2);
+    assert(uuid_set->intervals->start == 1);
+    assert(uuid_set->intervals->end == 100);
     uuidSetFree(uuid_set);
 
     uuid_set = uuidSetNewRange("A", 1, 1, 9);
     //"Create an new uuid set with 1-9"
-    assert(uuid_set->intervals->gno_start == 1);
-    assert(uuid_set->intervals->gno_end == 9);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(uuid_set->intervals->start == 1);
+    assert(uuid_set->intervals->end == 9);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
     uuidSetFree(uuid_set);
     return 1;
 }
 
-int test_uuidSetDump() {
+int test_uuidSetDup() {
     char* str = "A:1-2:4-5:7-8";
     uuidSet* uuid_set = uuidSetDecode(str, strlen(str));
-    uuidSet* dump = uuidSetDump(uuid_set);
+    uuidSet* dump = uuidSetDup(uuid_set);
     char buf[100];
     size_t len = uuidSetEncode(dump, buf);
     buf[len] = '\0';
@@ -190,30 +172,30 @@ int test_uuidSetDump() {
 int test_uuidSetDecode() {
     uuidSet* uuid_set = uuidSetDecode("A:1:3:5:7", 9);
     assert(uuid_set != NULL);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2)== 0);
-    assert(uuid_set->intervals->gno_start == 1);
-    assert(uuid_set->intervals->next->gno_start == 3);
-    assert(uuid_set->intervals->next->next->gno_start == 5);
-    assert(uuid_set->intervals->next->next->next->gno_start == 7);
+    assert(memcmp(uuid_set->sid, "A\0", 2)== 0);
+    assert(uuid_set->intervals->start == 1);
+    assert(uuid_set->intervals->next->start == 3);
+    assert(uuid_set->intervals->next->next->start == 5);
+    assert(uuid_set->intervals->next->next->next->start == 7);
     assert(uuid_set->intervals->next->next->next->next == NULL);
     uuidSetFree(uuid_set);
 
     uuid_set = uuidSetDecode("A:1-6:8", 7);
-    assert(uuid_set->intervals->gno_start == 1);
-    assert(uuid_set->intervals->gno_end == 6);
-    assert(uuid_set->intervals->next->gno_start == 8);
-    assert(uuid_set->intervals->next->gno_end == 8);
+    assert(uuid_set->intervals->start == 1);
+    assert(uuid_set->intervals->end == 6);
+    assert(uuid_set->intervals->next->start == 8);
+    assert(uuid_set->intervals->next->end == 8);
     assert(uuid_set->intervals->next->next == NULL);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
     uuidSetFree(uuid_set);
 
     uuid_set = uuidSetDecode("A:2-5:9adbsdada", 7);
-    assert(uuid_set->intervals->gno_start == 2);
-    assert(uuid_set->intervals->gno_end == 5);
-    assert(uuid_set->intervals->next->gno_start == 9);
-    assert(uuid_set->intervals->next->gno_end == 9);
+    assert(uuid_set->intervals->start == 2);
+    assert(uuid_set->intervals->end == 5);
+    assert(uuid_set->intervals->next->start == 9);
+    assert(uuid_set->intervals->next->end == 9);
     assert(uuid_set->intervals->next->next == NULL);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
     uuidSetFree(uuid_set);
     return 1;
 }
@@ -273,7 +255,7 @@ int test_uuidSetAddGtidInterval() {
     assert(buf_len == strlen("A:1-2:4-5:7-8:10-11"));
     assert(strncmp(buf, "A:1-2:4-5:7-8:10-11", buf_len) == 0);
 
-    //  A {gno_start} B {gno_end} C
+    //  A {start} B {end} C
     // in B
     //(1-5:7-8:10-11) + (2-3) = (1-5:7-8:10-11)
     decode_str = "A:1-5:7-8:10-11";
@@ -284,7 +266,7 @@ int test_uuidSetAddGtidInterval() {
     assert(buf_len == strlen("A:1-5:7-8:10-11"));
     assert(strncmp(buf, "A:1-5:7-8:10-11", buf_len) == 0);
 
-    //  A {gno_start} B {gno_end} C
+    //  A {start} B {end} C
     // in C
     // (1-2:7-8:10-11) + (4-5) = (1-2:4-5:7-8:10-11)
     decode_str = "A:1-2:7-8:10-11";
@@ -295,7 +277,7 @@ int test_uuidSetAddGtidInterval() {
     assert(buf_len == strlen("A:1-2:4-5:7-8:10-11"));
     assert(strncmp(buf, "A:1-2:4-5:7-8:10-11", buf_len) == 0);
 
-    //  A {gno_start} B {gno_end} C
+    //  A {start} B {end} C
     // in A + B
     decode_str = "A:3-5:7-8:10-11";
     uuid_set = uuidSetDecode(decode_str, strlen(decode_str));
@@ -305,7 +287,7 @@ int test_uuidSetAddGtidInterval() {
     assert(buf_len == strlen("A:1-5:7-8:10-11"));
     assert(strncmp(buf, "A:1-5:7-8:10-11", buf_len) == 0);
 
-    //  A {gno_start} B {gno_end} C
+    //  A {start} B {end} C
     // in B + C
     decode_str = "A:1-3:7-8:10-11";
     uuid_set = uuidSetDecode(decode_str, strlen(decode_str));
@@ -315,7 +297,7 @@ int test_uuidSetAddGtidInterval() {
     assert(buf_len == strlen("A:1-5:7-8:10-11"));
     assert(strncmp(buf, "A:1-5:7-8:10-11", buf_len) == 0);
 
-    //  A {gno_start} B {gno_end} C
+    //  A {start} B {end} C
     // in A + C
     decode_str = "A:2-3:7-8:10-11";
     uuid_set = uuidSetDecode(decode_str, strlen(decode_str));
@@ -325,7 +307,7 @@ int test_uuidSetAddGtidInterval() {
     assert(buf_len == strlen("A:1-5:7-8:10-11"));
     assert(strncmp(buf, "A:1-5:7-8:10-11", buf_len) == 0);
 
-    // A {gno_start} B {gno_end} C {all_next_start} D {all_next_end} E
+    // A {start} B {end} C {all_next_start} D {all_next_end} E
     // A + D
     //(A:2-3:6-8:11-13) + (A:1-7) = (A:1-8:11-13)
     decode_str = "A:2-3:6-8:11-13";
@@ -550,8 +532,8 @@ int test_uuidSetAddGtidInterval() {
 int test_uuidSetAdd() {
     uuidSet* uuid_set = uuidSetNew("A", 1, 1);
     uuidSetAdd(uuid_set, 3);
-    assert(uuid_set->intervals->next->gno_start == 3);
-    assert(uuid_set->intervals->next->gno_end == 3);
+    assert(uuid_set->intervals->next->start == 3);
+    assert(uuid_set->intervals->next->end == 3);
 
     char buf[100];
     size_t len = uuidSetEncode(uuid_set, buf);
@@ -584,34 +566,34 @@ int test_uuidSetAdd() {
     uuidSetAdd(uuid_set, 14);
     uuidSetAdd(uuid_set, 12);
     //Manual created case: result should be A:1:3:5-6:11-14:19-20
-    assert(uuid_set->intervals->gno_start == 1 );
-    assert(uuid_set->intervals->gno_end == 1);
-    assert(uuid_set->intervals->next->gno_start == 3);
-    assert(uuid_set->intervals->next->gno_end == 3);
-    assert(uuid_set->intervals->next->next->gno_start == 5);
-    assert(uuid_set->intervals->next->next->gno_end == 6);
-    assert(uuid_set->intervals->next->next->next->gno_start == 11);
-    assert(uuid_set->intervals->next->next->next->gno_end == 14);
-    assert(uuid_set->intervals->next->next->next->next->gno_start == 19);
-    assert(uuid_set->intervals->next->next->next->next->gno_end == 20);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(uuid_set->intervals->start == 1 );
+    assert(uuid_set->intervals->end == 1);
+    assert(uuid_set->intervals->next->start == 3);
+    assert(uuid_set->intervals->next->end == 3);
+    assert(uuid_set->intervals->next->next->start == 5);
+    assert(uuid_set->intervals->next->next->end == 6);
+    assert(uuid_set->intervals->next->next->next->start == 11);
+    assert(uuid_set->intervals->next->next->next->end == 14);
+    assert(uuid_set->intervals->next->next->next->next->start == 19);
+    assert(uuid_set->intervals->next->next->next->next->end == 20);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
     uuidSetFree(uuid_set);
 
     uuid_set = uuidSetNew("A", 1, 9);
     uuidSetAdd(uuid_set, 8);
     //Add 8 to 9
-    assert(uuid_set->intervals->gno_start == 8);
-    assert(uuid_set->intervals->gno_end == 9);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(uuid_set->intervals->start == 8);
+    assert(uuid_set->intervals->end == 9);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
     uuidSetAdd(uuid_set, 6);
     //Add 6 to 8-9
-    assert(uuid_set->intervals->gno_start == 6);
-    assert(uuid_set->intervals->gno_end == 6);
-    assert(uuid_set->intervals->next->gno_start == 8);
-    assert(uuid_set->intervals->next->gno_end == 9);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(uuid_set->intervals->start == 6);
+    assert(uuid_set->intervals->end == 6);
+    assert(uuid_set->intervals->next->start == 8);
+    assert(uuid_set->intervals->next->end == 9);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
     //"Add 8 to 8-9"
     assert(uuidSetAdd(uuid_set, 8) == 0);
@@ -619,18 +601,18 @@ int test_uuidSetAdd() {
     uuidSetAdd(uuid_set, 7);
     //"Add 7 to 6,8-9"
     assert(
-            uuid_set->intervals->gno_start == 6);
-    assert(uuid_set->intervals->gno_end == 9);
+            uuid_set->intervals->start == 6);
+    assert(uuid_set->intervals->end == 9);
     assert(uuid_set->intervals->next == NULL);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
     uuidSetAdd(uuid_set, 100);
     //"Add 100 to 6-9"
-    assert(uuid_set->intervals->gno_start == 6);
-    assert(uuid_set->intervals->gno_end == 9);
-    assert(uuid_set->intervals->next->gno_start == 100);
-    assert(uuid_set->intervals->next->gno_end == 100);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(uuid_set->intervals->start == 6);
+    assert(uuid_set->intervals->end == 9);
+    assert(uuid_set->intervals->next->start == 100);
+    assert(uuid_set->intervals->next->end == 100);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
     uuidSetFree(uuid_set);
 
@@ -638,17 +620,17 @@ int test_uuidSetAdd() {
     uuid_set = uuidSetNew("ABC",1, 9);
 
     //Create an new uuid set with 9
-    assert(uuid_set->intervals->gno_start == 9);
-    assert(uuid_set->intervals->gno_end == 9);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(uuid_set->intervals->start == 9);
+    assert(uuid_set->intervals->end == 9);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
     uuidSetAdd(uuid_set, 7);
     //"Add 7 to 9"
-    assert(uuid_set->intervals->gno_start == 7);
-    assert(uuid_set->intervals->gno_end == 7);
-    assert(uuid_set->intervals->next->gno_start == 9);
-    assert(uuid_set->intervals->next->gno_end == 9);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(uuid_set->intervals->start == 7);
+    assert(uuid_set->intervals->end == 7);
+    assert(uuid_set->intervals->next->start == 9);
+    assert(uuid_set->intervals->next->end == 9);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
     uuidSetFree(uuid_set);
     return 1;
@@ -665,27 +647,27 @@ int test_uuidSetRaise() {
 
     uuid_set = uuidSetNew("A", 1, 5);
     uuidSetRaise(uuid_set, 6);
-    assert(uuid_set->intervals->gno_start == 1 );
-    assert(uuid_set->intervals->gno_end == 6);
+    assert(uuid_set->intervals->start == 1 );
+    assert(uuid_set->intervals->end == 6);
     assert(uuid_set->intervals->next == NULL);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
     uuidSetFree(uuid_set);
     uuid_set = uuidSetNew("A", 1, 5);
     uuidSetAdd(uuid_set, 7);
     uuidSetRaise(uuid_set, 6);
-    assert(uuid_set->intervals->gno_start == 1);
-    assert(uuid_set->intervals->gno_end == 7);
+    assert(uuid_set->intervals->start == 1);
+    assert(uuid_set->intervals->end == 7);
     assert(uuid_set->intervals->next == NULL);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
     uuid_set = uuidSetNew("A", 1, 5);
     uuidSetRaise(uuid_set, 3);
-    assert(uuid_set->intervals->gno_start == 1);
-    assert(uuid_set->intervals->gno_end == 3);
-    assert(uuid_set->intervals->next->gno_start == 5);
-    assert(uuid_set->intervals->next->gno_end == 5);
+    assert(uuid_set->intervals->start == 1);
+    assert(uuid_set->intervals->end == 3);
+    assert(uuid_set->intervals->next->start == 5);
+    assert(uuid_set->intervals->next->end == 5);
     assert(uuid_set->intervals->next->next == NULL);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
     uuidSetFree(uuid_set);
 
     char* uuidset = "A:1:3:5-6:11-14:19-20";
@@ -695,10 +677,10 @@ int test_uuidSetRaise() {
     // assert(strcmp(uuidset, "A:1:3:5-6:11-14:19-20") == 0);
     uuidSetRaise(uuid_set, 30);
     //Manual created case (raise to 30)
-    assert(uuid_set->intervals->gno_start == 1);
-    assert(uuid_set->intervals->gno_end == 30);
+    assert(uuid_set->intervals->start == 1);
+    assert(uuid_set->intervals->end == 30);
     assert(uuid_set->intervals->next == NULL);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
     uuidSetFree(uuid_set);
     return 1;
@@ -712,12 +694,12 @@ int test_uuidSetContains() {
     uuid_set = uuidSetNew("A",1,5);
     uuidSetAdd(uuid_set, 8);
     uuidSetRaise(uuid_set, 6);
-    assert(uuid_set->intervals->gno_start == 1);
-    assert(uuid_set->intervals->gno_end == 6);
-    assert(uuid_set->intervals->next->gno_start == 8);
-    assert(uuid_set->intervals->next->gno_end == 8);
+    assert(uuid_set->intervals->start == 1);
+    assert(uuid_set->intervals->end == 6);
+    assert(uuid_set->intervals->next->start == 8);
+    assert(uuid_set->intervals->next->end == 8);
     assert(uuid_set->intervals->next->next == NULL);
-    assert(memcmp(uuid_set->rpl_sid, "A\0", 2) == 0);
+    assert(memcmp(uuid_set->sid, "A\0", 2) == 0);
 
 
     //next of A:1-6:8 is 7
@@ -814,8 +796,8 @@ int test_uuidSetNextEncode() {
     next_len = uuidSetNextEncode(B, 1, next);
     next[next_len] = '\0';
     long long gno = 0;
-    int rpl_sid_len = 0;
-    uuidDecode(next, next_len, &gno, &rpl_sid_len);
+    int sid_len = 0;
+    uuidDecode(next, next_len, &gno, &sid_len);
     //B next of A:1-7,B:1-2:9:11-13:20 5 times & Update
     assert(strcmp("B:7", next) == 0);
     assert(gno == 7);
@@ -848,12 +830,12 @@ int test_gtidSetNew() {
 int test_gtidSetDecode() {
     char* gtid_set_str = "A:1,B:1";
     gtidSet* gtid_set = gtidSetDecode(gtid_set_str, 7);
-    assert(strcmp(gtid_set->uuid_sets->rpl_sid, "A") == 0);
-    assert(gtid_set->uuid_sets->intervals->gno_start == 1);
-    assert(gtid_set->uuid_sets->intervals->gno_end == 1);
-    assert(strcmp(gtid_set->uuid_sets->next->rpl_sid, "B") == 0);
-    assert(gtid_set->uuid_sets->next->intervals->gno_start == 1);
-    assert(gtid_set->uuid_sets->next->intervals->gno_end == 1);
+    assert(strcmp(gtid_set->uuid_sets->sid, "A") == 0);
+    assert(gtid_set->uuid_sets->intervals->start == 1);
+    assert(gtid_set->uuid_sets->intervals->end == 1);
+    assert(strcmp(gtid_set->uuid_sets->next->sid, "B") == 0);
+    assert(gtid_set->uuid_sets->next->intervals->start == 1);
+    assert(gtid_set->uuid_sets->next->intervals->end == 1);
     gtidSetFree(gtid_set);
 
     gtid_set_str = "A:1-7,B:9:11-13:20ABC";
@@ -924,29 +906,29 @@ int test_gtidSetFindUuidSet() {
     gtidSet* gtid_set = gtidSetDecode("A:1,B:2", 7);
     uuidSet* A = gtidSetFindUuidSet(gtid_set, "A", 1);
     assert(A != NULL);
-    assert(strcmp(A->rpl_sid, "A") == 0);
-    assert(A->intervals->gno_start == 1);
+    assert(strcmp(A->sid, "A") == 0);
+    assert(A->intervals->start == 1);
     uuidSet* B = gtidSetFindUuidSet(gtid_set, "B", 1);
     assert(B != NULL);
-    assert(strcmp(B->rpl_sid, "B") == 0);
-    assert(B->intervals->gno_start == 2);
+    assert(strcmp(B->sid, "B") == 0);
+    assert(B->intervals->start == 2);
     return 1;
 }
 
 int test_gtidSetAdd() {
     gtidSet* gtid_set = gtidSetNew();
     gtidSetAdd(gtid_set, "A", 1, 1);
-    assert(strcmp(gtid_set->uuid_sets->rpl_sid, "A") == 0);
-    assert(gtid_set->uuid_sets->intervals->gno_start == 1);
-    assert(gtid_set->uuid_sets->intervals->gno_end == 1);
+    assert(strcmp(gtid_set->uuid_sets->sid, "A") == 0);
+    assert(gtid_set->uuid_sets->intervals->start == 1);
+    assert(gtid_set->uuid_sets->intervals->end == 1);
     gtidSetAdd(gtid_set, "A", 1, 2);
-    assert(gtid_set->uuid_sets->intervals->gno_start == 1);
-    assert(gtid_set->uuid_sets->intervals->gno_end == 2);
+    assert(gtid_set->uuid_sets->intervals->start == 1);
+    assert(gtid_set->uuid_sets->intervals->end == 2);
 
     gtidSetAdd(gtid_set, "B", 1, 1);
-    assert(strcmp(gtid_set->uuid_sets->next->rpl_sid, "B") == 0);
-    assert(gtid_set->uuid_sets->next->intervals->gno_start == 1);
-    assert(gtid_set->uuid_sets->next->intervals->gno_end == 1);
+    assert(strcmp(gtid_set->uuid_sets->next->sid, "B") == 0);
+    assert(gtid_set->uuid_sets->next->intervals->start == 1);
+    assert(gtid_set->uuid_sets->next->intervals->end == 1);
     gtidSetFree(gtid_set);
 
     gtid_set = gtidSetNew();
@@ -954,12 +936,12 @@ int test_gtidSetAdd() {
     gtidSetAdd(gtid_set, "A", 1, 2);
     gtidSetAdd(gtid_set, "B", 1, 3);
     //Add A:1 A:2 B:3 to empty gtid set
-    assert(memcmp(gtid_set->uuid_sets->rpl_sid, "A\0", 1) == 0);
-    assert(gtid_set->uuid_sets->intervals->gno_start == 1);
-    assert(gtid_set->uuid_sets->intervals->gno_end == 2);
-    assert(memcmp(gtid_set->uuid_sets->next->rpl_sid, "B\0", 1) == 0);
-    assert(gtid_set->uuid_sets->next->intervals->gno_start == 3);
-    assert(gtid_set->uuid_sets->next->intervals->gno_end == 3);
+    assert(memcmp(gtid_set->uuid_sets->sid, "A\0", 1) == 0);
+    assert(gtid_set->uuid_sets->intervals->start == 1);
+    assert(gtid_set->uuid_sets->intervals->end == 2);
+    assert(memcmp(gtid_set->uuid_sets->next->sid, "B\0", 1) == 0);
+    assert(gtid_set->uuid_sets->next->intervals->start == 3);
+    assert(gtid_set->uuid_sets->next->intervals->end == 3);
 
     char gtid_str[gtidSetEstimatedEncodeBufferSize(gtid_set)];
     int len = gtidSetEncode(gtid_set, gtid_str);
@@ -984,14 +966,14 @@ int test_gtidSetRaise() {
     char* gtid_set_str = "A:1:3:5:7";
     gtidSet* gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
     gtidSetRaise(gtid_set, "A", 1, 10);
-    assert(gtid_set->uuid_sets->intervals->gno_start == 1);
-    assert(gtid_set->uuid_sets->intervals->gno_end == 10);
+    assert(gtid_set->uuid_sets->intervals->start == 1);
+    assert(gtid_set->uuid_sets->intervals->end == 10);
     gtidSetFree(gtid_set);
     gtid_set = gtidSetNew();
     gtidSetRaise(gtid_set, "A", 1, 1);
-    assert(strcmp(gtid_set->uuid_sets->rpl_sid, "A") == 0);
-    assert(gtid_set->uuid_sets->intervals->gno_start == 1);
-    assert(gtid_set->uuid_sets->intervals->gno_end == 1);
+    assert(strcmp(gtid_set->uuid_sets->sid, "A") == 0);
+    assert(gtid_set->uuid_sets->intervals->start == 1);
+    assert(gtid_set->uuid_sets->intervals->end == 1);
 
     gtid_set_str = "A:1-2,B:3";
     gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
@@ -1086,10 +1068,6 @@ int test_gtidSetAppendGtidSet() {
 
 int test_api(void) {
     {
-        test_cond("writeBuf function",
-                test_writeBuf() == 1);
-        test_cond("stringNew function",
-                test_stringNew() == 1);
         test_cond("gtidSetAppendUuidSet function",
                 test_gtidSetAppendUuidSet() == 1);
         test_cond("gtidSetRaise function",
@@ -1098,8 +1076,8 @@ int test_api(void) {
                 test_gtidIntervalNew() == 1);
         test_cond("gtidIntervalNewRange function",
                 test_gtidIntervalNewRange() == 1);
-        test_cond("gtidIntervalDump function",
-                test_gtidIntervalDump() == 1);
+        test_cond("gtidIntervalDup function",
+                test_gtidIntervalDup() == 1);
         test_cond("gtidIntervalDecode function",
                 test_gtidIntervalDecode() == 1);
         test_cond("gtidIntervalEncode function",
@@ -1108,8 +1086,8 @@ int test_api(void) {
                 test_uuidSetNew() == 1);
         test_cond("uuidSetNewRange function",
                 test_uuidSetNewRange() == 1);
-        test_cond("uuidSetDump function",
-                test_uuidSetDump() == 1);
+        test_cond("uuidSetDup function",
+                test_uuidSetDup() == 1);
         test_cond("uuidSetDecode function",
                 test_uuidSetDecode() == 1);
         test_cond("uuidSetEstimatedEncodeBufferSize function",
