@@ -84,7 +84,7 @@ void gtidCommand(client *c) {
     sds gtid = c->argv[1]->ptr;
     long long gno = 0;
     int sid_len = 0;
-    char* sid = uuidDecode(gtid, sdslen(gtid), &gno, &sid_len);
+    char* sid = uuidGnoDecode(gtid, sdslen(gtid), &gno, &sid_len);
     if (sid == NULL) {
         addReplyErrorFormat(c,"gtid format error:%s", gtid);
         return;
@@ -156,7 +156,7 @@ void gtidCommand(client *c) {
     c->argv = NULL;
     int result = 0;
     if(uuid_set != NULL) {
-        result = uuidSetAdd(uuid_set, gno);
+        result = uuidSetAdd(uuid_set, gno, gno);
     } else {
         result = gtidSetAdd(server.gtid_executed, sid, sid_len, gno);
     }
@@ -571,7 +571,7 @@ void ctripMergeEndCommand(client* c) {
     }
     c->gtid_in_merge = 0;
     gtidSet* gtid_set = gtidSetDecode(c->argv[1]->ptr, sdslen(c->argv[1]->ptr));
-    gtidSetAppendGtidSet(server.gtid_executed, gtid_set);
+    gtidSetMerge(server.gtid_executed, gtid_set);
     gtidSetFree(gtid_set);
     server.dirty++;
     addReply(c, shared.ok);

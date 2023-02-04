@@ -29,62 +29,63 @@
 #ifndef __REDIS_CTRIP_GTID_H
 #define __REDIS_CTRIP_GTID_H
 
+#include <stdlib.h>
+#include <sys/types.h>
 
-#include <stdio.h>
+ /* gno start from 1 */
+#define GNO_INITIAL 1
 
- /* start from 1 */
-typedef long long int gno_t;
+typedef long long gno_t;
 
-typedef struct gtidInterval {
+typedef struct gtidIntervalNode {
     gno_t start;
     gno_t end;
-    struct gtidInterval *next;
-} gtidInterval;
+    struct gtidIntervalNode *forwards[];
+} gtidIntervalNode;
+
+typedef struct gtidIntervalSkipList {
+    struct gtidIntervalNode *header;
+    struct gtidIntervalNode *tail;
+    size_t node_count;
+    gno_t gno_count;
+    int level;
+} gtidIntervalSkipList;
 
 typedef struct uuidSet {
-    struct gtidInterval* intervals;
+    char* uuid;
+    size_t uuid_len;
+    struct gtidIntervalSkipList* intervals;
     struct uuidSet *next;
-    char* sid;
-    size_t sid_len;
 } uuidSet;
 
 typedef struct gtidSet {
-    struct uuidSet* uuid_sets;
+    struct uuidSet* header;
     struct uuidSet* tail;
 } gtidSet;
 
-gtidInterval *gtidIntervalNew(gno_t gno);
-gtidInterval *gtidIntervalDup(gtidInterval* gtid_interval);
-void gtidIntervalFree(gtidInterval* interval);
-gtidInterval *gtidIntervalNewRange(gno_t start, gno_t end);
-gtidInterval *gtidIntervalDecode(char* repr, size_t len);
-size_t gtidIntervalEncode(gtidInterval* interval, char* buf);
-
-uuidSet *uuidSetNew(const char* sid, size_t sid_len, gno_t gno);
+uuidSet *uuidSetNew(const char* uuid, size_t uuid_len);
 void uuidSetFree(uuidSet* uuid_set);
 uuidSet *uuidSetDup(uuidSet* uuid_set);
-uuidSet *uuidSetNewRange(const char* sid, size_t sid_len, gno_t start, gno_t end);
+ssize_t uuidSetEncode(char *buf, size_t maxlen, uuidSet* uuid_set);
 uuidSet *uuidSetDecode(char* repr, int len);
-
-size_t uuidSetEstimatedEncodeBufferSize(uuidSet* uuid_set);
-size_t uuidSetEncode(uuidSet* uuid_set, char* buf);
-int uuidSetAdd(uuidSet* uuid_set, gno_t gno);
-void uuidSetRaise(uuidSet* uuid_set, gno_t gno);
+gno_t uuidSetAdd(uuidSet* uuid_set, gno_t start, gno_t end);
+gno_t uuidSetRaise(uuidSet* uuid_set, gno_t gno);
+gno_t uuidSetMerge(uuidSet* uuid_set, uuidSet* other);
 int uuidSetContains(uuidSet* uuid_set, gno_t gno);
-gno_t uuidSetNext(uuidSet* uuid_set, int update);
-size_t uuidSetNextEncode(uuidSet* uuid_set, int update, char* buf);
-int uuidSetAppendUuidSet(uuidSet* uuid_set, uuidSet* other);
-int uuidSetAddGtidInterval(uuidSet* uuid_set, gtidInterval* interval);
-
-char* uuidDecode(char* src, size_t src_len, long long* gno, int* sid_len);
-uuidSet* gtidSetFindUuidSet(gtidSet* gtid_set,const char* sid, size_t len);
+size_t uuidSetEstimatedEncodeBufferSize(uuidSet* uuid_set);
 
 gtidSet* gtidSetNew();
-void gtidSetFree(gtidSet*);
+void gtidSetFree(gtidSet* gtid_set);
 gtidSet *gtidSetDecode(char* repr, size_t len);
+ssize_t gtidSetEncode(char *buf, size_t maxlen, gtidSet* gtid_set);
+gno_t gtidSetAdd(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
+gno_t gtidSetRaise(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
+gno_t gtidSetMerge(gtidSet* gtid_set, gtidSet* other);
+gno_t gtidSetAppend(gtidSet *gtid_set, uuidSet *uuid_set);
+uuidSet* gtidSetFind(gtidSet* gtid_set,const char* uuid, size_t len);
 size_t gtidSetEstimatedEncodeBufferSize(gtidSet* gtid_set);
-size_t gtidSetEncode(gtidSet* gtid_set, char* buf);
-int gtidSetAdd(gtidSet* gtid_set, const char* sid, size_t sid_len, gno_t gno);
-void gtidSetRaise(gtidSet* gtid_set, const char* sid, size_t sid_len, gno_t gno);
-void gtidSetAppendGtidSet(gtidSet* gtid_set, gtidSet* other);
+
+ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid, size_t uuid_len, gno_t gno);
+char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len);
+
 #endif  /* __REDIS_CTRIP_GTID_H */
