@@ -38,6 +38,7 @@
 typedef long long gno_t;
 
 typedef struct gtidIntervalNode {
+    int level;
     gno_t start;
     gno_t end;
     struct gtidIntervalNode *forwards[];
@@ -45,7 +46,6 @@ typedef struct gtidIntervalNode {
 
 typedef struct gtidIntervalSkipList {
     struct gtidIntervalNode *header;
-    struct gtidIntervalNode *tail;
     size_t node_count;
     gno_t gno_count;
     int level;
@@ -71,6 +71,7 @@ uuidSet *uuidSetDecode(char* repr, int len);
 gno_t uuidSetAdd(uuidSet* uuid_set, gno_t start, gno_t end);
 gno_t uuidSetRaise(uuidSet* uuid_set, gno_t gno);
 gno_t uuidSetMerge(uuidSet* uuid_set, uuidSet* other);
+gno_t uuidSetNext(uuidSet* uuid_set, int update);
 int uuidSetContains(uuidSet* uuid_set, gno_t gno);
 size_t uuidSetEstimatedEncodeBufferSize(uuidSet* uuid_set);
 

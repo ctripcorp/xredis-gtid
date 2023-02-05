@@ -1,7 +1,19 @@
 
 STD=-std=c99
-FINAL_CFLAGS=$(STD) $(CFLAGS) -I./include -I./
 
+ifdef SANITIZER
+ifeq ($(SANITIZER),address)
+   CFLAGS+=-fsanitize=address -fno-sanitize-recover=all -fno-omit-frame-pointer
+else
+ifeq ($(SANITIZER),undefined)
+   CFLAGS+=-fsanitize=undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+else
+    $(error "unknown sanitizer=${SANITIZER}")
+endif
+endif
+endif
+
+FINAL_CFLAGS=$(STD) $(CFLAGS) -I./include -I./
 
 CTRIP_CC=$(CC) $(FINAL_CFLAGS)
 XREDIS_GTID_LIB=lib/libgtid.a
@@ -14,7 +26,6 @@ DEBUG=-g -ggdb
 PREFIX?=.
 INSTALL_DIR?=$(PREFIX)/bin
 INSTALL=cp -rf
-
 
 %.o: %.c
 	echo $(CTRIP_CC)
