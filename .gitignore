@@ -23,4 +23,5 @@ Makefile.dep
 compile_commands.json
 *.a
 gtid_test
+gtid_bench
 .cache/*

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "testhelp.h"
 #include "limits.h"
 #include "gtid_malloc.h"
@@ -573,6 +574,31 @@ int test_uuidSetAdd() {
     return 1;
 }
 
+int test_uuidSetAddChaos() {
+    int mask = 20;
+    int range = 1<<mask, round = 1024;
+    uuidSet *uuid_set = uuidSetNew("A",1);
+    srand(time(NULL));
+    for (int i = 0; i < round; i++) {
+        while (uuid_set->intervals->gno_count < range) {
+            int gno, start, end, tmp;
+
+            gno = rand()%range + 1;
+            uuidSetAdd(uuid_set, gno, gno);
+
+            start = rand()%range + 1, end = start + rand() % mask;
+            if (start > end) {
+                tmp = start;
+                start = end;
+                end = tmp;
+            }
+            uuidSetAdd(uuid_set, start, end);
+        }
+    }
+    uuidSetFree(uuid_set);
+    return 1;
+}
+
 int test_uuidSetRaise() {
     size_t maxlen = 100, len;
     char buf[maxlen];
@@ -1077,6 +1103,8 @@ int test_api(void) {
                 test_uuidSetAdd() == 1);
         test_cond("uuidSetAddInterval function",
                 test_uuidSetAddInterval() == 1);
+        test_cond("uuidSetAdd Chaos",
+                test_uuidSetAddChaos() == 1);
         test_cond("uuidSetRaise function",
                 test_uuidSetRaise() == 1);
         test_cond("uuidSetContains function",
