@@ -1,5 +1,5 @@
-
 STD=-std=c99
+OPT=-O2
 
 ifdef SANITIZER
 ifeq ($(SANITIZER),address)
@@ -13,7 +13,7 @@ endif
 endif
 endif
 
-FINAL_CFLAGS=$(STD) $(CFLAGS) -I./include -I./
+FINAL_CFLAGS=$(STD) $(OPT) $(CFLAGS) -I./include -I./
 
 CTRIP_CC=$(CC) $(FINAL_CFLAGS)
 XREDIS_GTID_LIB=lib/libgtid.a
@@ -36,16 +36,19 @@ $(XREDIS_GTID_LIB): $(XREDIS_GTID_OBJ)
 	@mkdir -p lib
 	$(AR) $(ARFLAGS) $(XREDIS_GTID_LIB) $(XREDIS_GTID_OBJ)
 
+bench:  $(XREDIS_GTID_LIB) ./gtid_bench.o
+	$(CTRIP_CC)  -g -ggdb  -o  gtid_bench  gtid_bench.o ./lib/libgtid.a -lm -ldl
 
 all: $(XREDIS_GTID_LIB)
 
 clean:
-	rm -rf $(XREDIS_GTID_LIB) $(XREDIS_GTID_OBJ) ./gtid_test.o
-	rm -rf gtid_test debug
+	rm -rf $(XREDIS_GTID_LIB) $(XREDIS_GTID_OBJ) ./gtid_test.o ./gtid_bench.o
+	rm -rf gtid_test debug gtid_bench
 
 test:  $(XREDIS_GTID_LIB) ./gtid_test.o
 	$(CTRIP_CC)  -g -ggdb  -o  gtid_test  gtid_test.o ./lib/libgtid.a -lm -ldl
 	./gtid_test
+
 
 install: all
 	@mkdir -p $(INSTALL_DIR)
