@@ -211,13 +211,12 @@ gno_t gtidIntervalSkipListAdd(gtidIntervalSkipList *gsl, gno_t start, gno_t end)
 }
 
 gno_t gtidIntervalSkipListMerge(gtidIntervalSkipList *dst,
-        MOVE gtidIntervalSkipList *src) {
+        gtidIntervalSkipList *src) {
     gno_t added = 0;
     gtidIntervalNode *x;
     for (x = src->header->forwards[0]; x != NULL; x = x->forwards[0]) {
         added += gtidIntervalSkipListAdd(dst, x->start, x->end);
     }
-    // gtidIntervalSkipListFree(src); //TODO FIXME
     return added;
 }
 
@@ -380,11 +379,11 @@ gno_t uuidSetRaise(uuidSet *uuid_set, gno_t watermark) {
 }
 
 gno_t uuidSetMerge(uuidSet* dst, MOVE uuidSet* src) {
-    if(dst->uuid_len != src->uuid_len ||
-            memcmp(dst->uuid, src->uuid, src->uuid_len) != 0) {
-        return 0;
-    }
-    return gtidIntervalSkipListMerge(dst->intervals, src->intervals);
+    assert(dst->uuid_len == src->uuid_len);
+    assert(memcmp(dst->uuid, src->uuid, src->uuid_len) == 0);
+    gno_t added = gtidIntervalSkipListMerge(dst->intervals, src->intervals);
+    uuidSetFree(src);
+    return added;
 }
 
 int uuidSetContains(uuidSet* uuid_set, gno_t gno) {
@@ -498,16 +497,20 @@ gno_t gtidSetRaise(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t w
 
 gno_t gtidSetMerge(gtidSet* dst, MOVE gtidSet* src) {
     gno_t added = 0;
-    uuidSet *cur = src->header, *next, *dst_uuid_set;
-    while(cur != NULL) {
-        next = cur->next;
-        dst_uuid_set = gtidSetFind(dst, cur->uuid, cur->uuid_len);
+    uuidSet *src_uuid_set = src->header, *next, *dst_uuid_set;
+    while(src_uuid_set != NULL) {
+        next = src_uuid_set->next;
+        src_uuid_set->next = NULL;
+
+        dst_uuid_set = gtidSetFind(dst, src_uuid_set->uuid, src_uuid_set->uuid_len);
         if(dst_uuid_set != NULL) {
-            added += uuidSetMerge(dst_uuid_set, cur);
+            added += uuidSetMerge(dst_uuid_set, src_uuid_set);
         } else {
-            added += gtidSetAppend(dst, cur);
+            added += gtidSetAppend(dst, src_uuid_set);
         }
-        cur = next;
+        src_uuid_set = next;
     }
+    src->header = src->tail = NULL;
+    gtidSetFree(src);
     return added;
 }

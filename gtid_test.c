@@ -244,7 +244,6 @@ int test_uuidSetAddInterval() {
     assert(strncmp(buf, "A:1-8:11-13", buf_len) == 0);
     uuidSetFree(uuid_set);
 
-    //FIXME
     //(A:2-3:6-8:11-13:15-20) + (A:1-11) = (A:1-13:15-20)
     decode_str = "A:2-3:6-8:11-13";
     uuid_set = uuidSetDecode(decode_str, strlen(decode_str));
@@ -608,6 +607,7 @@ int test_uuidSetRaise() {
     assert(node->end == 7);
     assert(node->forwards[0] == NULL);
     assert(memcmp(uuid_set->uuid, "A\0", 2) == 0);
+    uuidSetFree(uuid_set);
 
     uuid_set = uuidSetNew("A", 1);
     uuidSetAdd(uuid_set, 5, 5);
@@ -779,6 +779,7 @@ int test_uuidSetNextEncode() {
     //B next of A:1-7,B:1-13:20 & Update
     assert(strcmp("B:14", next) == 0);
     assert(uuidSetContains(B, 14));
+    gtidSetFree(gtid_set);
     return 1;
 }
 
@@ -786,6 +787,7 @@ int test_gtidSetNew() {
     gtidSet* gtid_set = gtidSetNew();
     assert(gtid_set->header == NULL);
     assert(gtid_set->tail == NULL);
+    gtidSetFree(gtid_set);
     return 1;
 }
 
@@ -807,6 +809,8 @@ int test_gtidSetDecode() {
     int len = gtidSetEncode(gtid_str, maxlen, gtid_set);
     //encode & decode A:1-7,B:9:11-13:20 string len equal
     assert(len == strlen(gtid_set_str) - 3);
+    gtidSetFree(gtid_set);
+
     return 1;
 }
 
@@ -825,12 +829,14 @@ int test_gtidSetEstimatedEncodeBufferSize() {
     gtidSet* gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
     size_t max_len = gtidSetEstimatedEncodeBufferSize(gtid_set);
     assert(max_len > strlen(gtid_set_str));
+    gtidSetFree(gtid_set);
 
     //about empty
     gtid_set = gtidSetNew();
     max_len = gtidSetEstimatedEncodeBufferSize(gtid_set);
     //"estimated empty gtid set to string len > 0"
     assert(max_len > 0);
+    gtidSetFree(gtid_set);
 
     return 1;
 }
@@ -876,6 +882,7 @@ int test_gtidSetFind() {
     assert(B != NULL);
     assert(strcmp(B->uuid, "B") == 0);
     assert(B->intervals->header->forwards[0]->start == 2);
+    gtidSetFree(gtid_set);
     return 1;
 }
 
@@ -913,6 +920,7 @@ int test_gtidSetAdd() {
     gtid_str[len] = '\0';
     //Add A:1 A:2 B:3 to empty gtid set (encode)
     assert(strcmp(gtid_str, "A:1-2,B:3") == 0);
+    gtidSetFree(gtid_set);
 
     return 1;
 }
@@ -939,6 +947,7 @@ int test_gtidSetRaise() {
     assert(strcmp(gtid_set->header->uuid, "A") == 0);
     assert(gtid_set->header->intervals->header->forwards[0]->start == 1);
     assert(gtid_set->header->intervals->header->forwards[0]->end == 1);
+    gtidSetFree(gtid_set);
 
     gtid_set_str = "A:1-2,B:3";
     gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
@@ -964,6 +973,7 @@ int test_gtidSetRaise() {
     len = gtidSetEncode(gtid_str, maxlen, gtid_set);
     gtid_str[len] = '\0';
     assert(strcmp(gtid_str, "A:0") == 0);
+    gtidSetFree(gtid_set);
 
     return 1;
 }
@@ -1021,9 +1031,9 @@ int test_gtidSetAppendGtidSet() {
     str_len = gtidSetEncode(gtid_str, maxlen, A);
     assert(str_len == strlen("A:1:3:5:7,B:1:3:5:7"));
     assert(strncmp(gtid_str, "A:1:3:5:7,B:1:3:5:7",str_len) == 0);
-    str_len = gtidSetEncode(gtid_str, maxlen, B);
-    assert(str_len == strlen("B:1:3:5:7"));
-    assert(strncmp(gtid_str, "B:1:3:5:7",str_len) == 0);
+    /* str_len = gtidSetEncode(gtid_str, maxlen, B); */
+    /* assert(str_len == strlen("B:1:3:5:7")); */
+    /* assert(strncmp(gtid_str, "B:1:3:5:7",str_len) == 0); */
     gtidSetFree(A);
 
 
