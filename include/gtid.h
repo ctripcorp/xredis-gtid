@@ -72,6 +72,7 @@ gno_t uuidSetAdd(uuidSet* uuid_set, gno_t start, gno_t end);
 gno_t uuidSetRaise(uuidSet* uuid_set, gno_t gno);
 gno_t uuidSetMerge(uuidSet* uuid_set, uuidSet* other);
 gno_t uuidSetNext(uuidSet* uuid_set, int update);
+gno_t uuidSetCount(uuidSet* uuid_set);
 int uuidSetContains(uuidSet* uuid_set, gno_t gno);
 size_t uuidSetEstimatedEncodeBufferSize(uuidSet* uuid_set);
 

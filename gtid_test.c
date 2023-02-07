@@ -154,6 +154,33 @@ int test_uuidSetEncode() {
     return 1;
 }
 
+int test_uuidSetInvalidArg() {
+    uuidSet *uuid_set;
+    assert(uuidSetDecode("",0) == NULL);
+    assert(uuidSetDecode("foobar",6) == NULL);
+
+    uuid_set = uuidSetDecode("A:2-1",5);
+    assert(uuidSetCount(uuid_set) == 0);
+    uuidSetFree(uuid_set);
+
+    uuid_set = uuidSetDecode("A:foobar",8);
+    assert(uuidSetCount(uuid_set) == 0);
+    uuidSetFree(uuid_set);
+
+    uuid_set = uuidSetDecode("A:foobar",8);
+    uuid_set = uuidSetDecode("A:2-1",5);
+    uuidSetFree(uuid_set);
+
+    uuid_set = uuidSetDecode("A:3-10",5);
+    assert(uuidSetContains(uuid_set,0) == 0);
+    assert(uuidSetAdd(uuid_set,0,0) == 0);
+    assert(uuidSetAdd(uuid_set,2,1) == 0);
+    assert(uuidSetRaise(uuid_set,0) == 0);
+    uuidSetFree(uuid_set);
+
+    return 1;
+}
+
 int test_uuidSetAddInterval() {
     size_t maxlen = 100;
     char* decode_str;
@@ -1089,6 +1116,46 @@ int test_gtidSetAppendGtidSet() {
     return 1;
 }
 
+int test_gtidSetInvalidArg() {
+    gtidSet *gtid_set;
+
+    gtid_set = gtidSetDecode("",0);
+    assert(gtid_set != NULL && gtid_set->header == NULL);
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSetDecode(",",1);
+    assert(gtid_set != NULL && gtid_set->header == NULL);
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSetDecode("foobar",1);
+    assert(gtid_set != NULL && gtid_set->header == NULL);
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSetDecode("A:0",3);
+    assert(gtid_set != NULL && gtid_set->header != NULL);
+    assert(uuidSetCount(gtid_set->header) == 0);
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSetDecode("A:2-1",5);
+    assert(gtid_set != NULL && gtid_set->header != NULL);
+    assert(uuidSetCount(gtid_set->header) == 0);
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSetDecode("A:3-5",5);
+
+    assert(gtidSetAdd(gtid_set, "B", 1, 1) == 0); /* uuid not found */
+    assert(gtidSetAdd(gtid_set, "A", 1, 0) == 0);
+
+    assert(gtidSetRaise(gtid_set, "A", 1, 0) == 0);
+    assert(gtidSetMerge(gtid_set, NULL) == 0);
+
+    assert(gtidSetAppend(gtid_set, NULL) == 0);
+
+    assert(gtidSetFind(gtid_set, NULL, 0) == NULL);
+
+    return 1;
+}
+
 int test_api(void) {
     {
         test_cond("gtidIntervalNew function",
@@ -1119,6 +1186,8 @@ int test_api(void) {
                 test_uuidSetEstimatedEncodeBufferSize() == 1);
         test_cond("uuidSetEncode function",
                 test_uuidSetEncode() == 1);
+        test_cond("uuidSet api with invalid args",
+            test_uuidSetInvalidArg() == 1);
         test_cond("gtidSetNew function",
                 test_gtidSetNew() == 1);
         test_cond("gtidSetDecode function",
@@ -1139,6 +1208,8 @@ int test_api(void) {
                 test_uuidGnoDecode() == 1);
         test_cond("gtidSetAppendGtidSet function",
             test_gtidSetAppendGtidSet() == 1);
+        test_cond("gtidSet api with invalid args",
+            test_gtidSetInvalidArg() == 1);
 
     } test_report()
     return 1;
