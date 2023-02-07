@@ -50,6 +50,10 @@
 #define GTID_INTERVAL_SKIPLIST_MAXLEVEL 32 /* Should be enough for 2^64 elements */
 #define GTID_INTERVAL_SKIPLIST_P 0.25      /* Skiplist P = 1/4 */
 
+static inline int gtidIntervalIsValid(gno_t start, gno_t end) {
+    return start >= GNO_INITIAL && start <= end;
+}
+
 int gtidIntervalDecode(char* interval_str, size_t len, gno_t *pstart,
         gno_t *pend) {
     const char *hyphen = "-";
@@ -94,7 +98,6 @@ err:
 }
 
 gtidIntervalNode *gtidIntervalNodeNew(int level, gno_t start, gno_t end) {
-    assert(start <= end);
     size_t intvl_size = sizeof(gtidIntervalNode)+level*sizeof(gtidIntervalNode*);
     gtidIntervalNode *interval = gtid_malloc(intvl_size);
     memset(interval,0,intvl_size);
@@ -144,6 +147,8 @@ gno_t gtidIntervalSkipListAdd(gtidIntervalSkipList *gsl, gno_t start, gno_t end)
                  *rights[GTID_INTERVAL_SKIPLIST_MAXLEVEL], *x, *l, *r;
     int i, level;
     ssize_t added = 0;
+
+    assert(gtidIntervalIsValid(start, end));
 
     x = gsl->header;
     for (i = gsl->level-1; i >= 0; i--) {
@@ -223,7 +228,7 @@ gno_t gtidIntervalSkipListMerge(gtidIntervalSkipList *dst,
 int gtidIntervalSkipListContains(gtidIntervalSkipList *gsl, gno_t gno) {
     int i, level;
     gtidIntervalNode *x = gsl->header;
-    assert(gno > 0);
+    assert(gno >= GNO_INITIAL);
     for (i = gsl->level-1; i >= 0; i--) {
         while (x->forwards[i] && x->forwards[i]->start <= gno)
             x = x->forwards[i];
@@ -293,6 +298,10 @@ void uuidSetFree(uuidSet* uuid_set) {
     gtid_free(uuid_set);
 }
 
+gno_t uuidSetCount(uuidSet *uuid_set) {
+    return uuid_set->intervals->gno_count;
+}
+
 uuidSet *uuidSetDecode(char* uuid_set_str, int len) {
     const char *colon = ":";
     if(len <= 0 || uuid_set_str[len - 1] == colon[0]) {
@@ -312,21 +321,22 @@ uuidSet *uuidSetDecode(char* uuid_set_str, int len) {
         return NULL;
     }
     int end_index = len - 1;
-    int count = 0;
+    int count = 0, ret;
     gno_t start, end;
     for(int i = len - 2; i >= start_index; i--) {
         if(uuid_set_str[i] == colon[0]) {
             if(i == end_index) goto err;
-            gtidIntervalDecode(uuid_set_str+i+1, end_index-i, &start, &end);
-            if (start >= GNO_INITIAL && start <= end)
+            ret = gtidIntervalDecode(uuid_set_str+i+1, end_index-i,
+                    &start, &end);
+            if (ret == 0 && gtidIntervalIsValid(start,end))
                 uuidSetAdd(uuid_set, start, end);
             end_index = i - 1;
             count++;
         }
     }
-    gtidIntervalDecode(uuid_set_str+start_index, end_index-start_index+1,
-            &start, &end);
-    if (start >= GNO_INITIAL && start <= end)
+    ret = gtidIntervalDecode(uuid_set_str+start_index,
+            end_index-start_index+1, &start, &end);
+    if (ret == 0 && gtidIntervalIsValid(start, end))
         uuidSetAdd(uuid_set, start, end);
     return uuid_set;
 err:
@@ -345,13 +355,21 @@ size_t uuidSetEstimatedEncodeBufferSize(uuidSet* uuid_set) {
 
 ssize_t uuidSetEncode(char *buf, size_t maxlen, uuidSet* uuid_set) {
     size_t len = 0, ret;
+    gtidIntervalNode *cur, *header;
 
     if (len+uuid_set->uuid_len > maxlen) goto err;
     memcpy(buf + len, uuid_set->uuid, uuid_set->uuid_len);
     len += uuid_set->uuid_len;
 
-    for (gtidIntervalNode *cur = uuid_set->intervals->header->forwards[0];
-            cur != NULL; cur = cur->forwards[0]) {
+
+    if (uuid_set->intervals->header->forwards[0] == NULL) {
+        /* we use skiplist fake header to encode empty interval as "0" */
+        header = uuid_set->intervals->header;
+    } else {
+        header = uuid_set->intervals->header->forwards[0];
+    }
+
+    for (cur = header; cur != NULL; cur = cur->forwards[0]) {
         if (len+1 > maxlen) goto err;
         memcpy(buf + len, ":", 1), len += 1;
         ret = gtidIntervalEncode(buf+len, maxlen-len, cur->start, cur->end);
@@ -371,22 +389,26 @@ void uuidSetDump(uuidSet* uuid_set) {
 }
 
 gno_t uuidSetAdd(uuidSet* uuid_set, gno_t start, gno_t end)  {
+    if (!gtidIntervalIsValid(start, end)) return 0;
     return gtidIntervalSkipListAdd(uuid_set->intervals,start,end);
 }
 
 gno_t uuidSetRaise(uuidSet *uuid_set, gno_t watermark) {
+    if (!gtidIntervalIsValid(1, watermark)) return 0;
     return gtidIntervalSkipListAdd(uuid_set->intervals,1,watermark);
 }
 
 gno_t uuidSetMerge(uuidSet* dst, MOVE uuidSet* src) {
-    assert(dst->uuid_len == src->uuid_len);
-    assert(memcmp(dst->uuid, src->uuid, src->uuid_len) == 0);
+    if (dst->uuid_len != src->uuid_len ||
+            memcmp(dst->uuid, src->uuid, src->uuid_len))
+        return 0;
     gno_t added = gtidIntervalSkipListMerge(dst->intervals, src->intervals);
     uuidSetFree(src);
     return added;
 }
 
 int uuidSetContains(uuidSet* uuid_set, gno_t gno) {
+    if (!gtidIntervalIsValid(1, gno)) return 0;
     return gtidIntervalSkipListContains(uuid_set->intervals, gno);
 }
 
@@ -412,6 +434,7 @@ void gtidSetFree(gtidSet *gtid_set) {
 }
 
 gno_t gtidSetAppend(gtidSet *gtid_set, MOVE uuidSet *uuid_set) {
+    if (uuid_set == NULL) return 0;
     if (gtid_set->header == NULL) {
         gtid_set->header = uuid_set;
         gtid_set->tail = uuid_set;
@@ -419,7 +442,7 @@ gno_t gtidSetAppend(gtidSet *gtid_set, MOVE uuidSet *uuid_set) {
         gtid_set->tail->next = uuid_set;
         gtid_set->tail = uuid_set;
     }
-    return uuid_set->intervals->gno_count;
+    return uuidSetCount(uuid_set);
 }
 
 gtidSet *gtidSetDecode(char* src, size_t len) {
@@ -430,13 +453,13 @@ gtidSet *gtidSetDecode(char* src, size_t len) {
         if(src[i] == split[0]) {
             uuidSet *uuid_set = uuidSetDecode(src+uuid_str_start_index,
                     i-uuid_str_start_index);
-            if (uuid_set) gtidSetAppend(gtid_set, uuid_set);
+            gtidSetAppend(gtid_set, uuid_set);
             uuid_str_start_index = (i + 1);
         }
     }
     uuidSet *uuid_set = uuidSetDecode(src+uuid_str_start_index,
             len-uuid_str_start_index);
-    if (uuid_set) gtidSetAppend(gtid_set, uuid_set);
+    gtidSetAppend(gtid_set, uuid_set);
     return gtid_set;
 }
 
@@ -480,6 +503,7 @@ gno_t gtidSetAdd(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno
     uuidSet *cur = gtidSetFind(gtid_set, uuid, uuid_len);
     if (cur == NULL) {
         cur = uuidSetNew(uuid, uuid_len);
+        uuidSetAdd(cur, gno, gno);
         gtidSetAppend(gtid_set, cur);
     }
     return uuidSetAdd(cur, gno, gno);
@@ -496,6 +520,7 @@ gno_t gtidSetRaise(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t w
 }
 
 gno_t gtidSetMerge(gtidSet* dst, MOVE gtidSet* src) {
+    if (src == NULL) return 0;
     gno_t added = 0;
     uuidSet *src_uuid_set = src->header, *next, *dst_uuid_set;
     while(src_uuid_set != NULL) {
