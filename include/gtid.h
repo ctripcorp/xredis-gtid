@@ -58,10 +58,24 @@ typedef struct uuidSet {
     struct uuidSet *next;
 } uuidSet;
 
+typedef struct uuidSetPurged {
+    size_t node_count;
+    gno_t gno_count;
+    gno_t start;
+    gno_t end;
+} uuidSetPurged;
+
 typedef struct gtidSet {
     struct uuidSet* header;
     struct uuidSet* tail;
 } gtidSet;
+
+typedef struct gtidStat {
+   size_t used_memory;
+   size_t uuid_count;
+   size_t gap_count;
+   gno_t gno_count;
+} gtidStat;
 
 uuidSet *uuidSetNew(const char* uuid, size_t uuid_len);
 void uuidSetFree(uuidSet* uuid_set);
@@ -75,6 +89,8 @@ gno_t uuidSetNext(uuidSet* uuid_set, int update);
 gno_t uuidSetCount(uuidSet* uuid_set);
 int uuidSetContains(uuidSet* uuid_set, gno_t gno);
 size_t uuidSetEstimatedEncodeBufferSize(uuidSet* uuid_set);
+size_t uuidSetPurge(uuidSet *uuid_set, size_t memory_limit, uuidSetPurged *purged);
+void uuidSetGetStat(uuidSet *uuid_set, gtidStat *stat);
 
 gtidSet* gtidSetNew();
 void gtidSetFree(gtidSet* gtid_set);
@@ -85,7 +101,9 @@ gno_t gtidSetRaise(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t g
 gno_t gtidSetMerge(gtidSet* gtid_set, gtidSet* other);
 gno_t gtidSetAppend(gtidSet *gtid_set, uuidSet *uuid_set);
 uuidSet* gtidSetFind(gtidSet* gtid_set,const char* uuid, size_t len);
+int gtidSetRemove(gtidSet* gtid_set, const char *uuid, size_t uuid_len);
 size_t gtidSetEstimatedEncodeBufferSize(gtidSet* gtid_set);
+void gtidSetGetStat(gtidSet *gtid_set, gtidStat *stat);
 
 ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid, size_t uuid_len, gno_t gno);
 char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len);

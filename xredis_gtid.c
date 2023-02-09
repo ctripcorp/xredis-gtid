@@ -2,35 +2,16 @@
 #include <gtid.h>
 #define GTID_COMMAN_ARGC 3
 
-/**
- * @brief
- *       redis.conf:
- *          gtid-enabled yes (open)
- * @return int
- *
- */
 int isGtidEnabled() {
     return server.gtid_enabled;
 }
 
 
-/**
- * @brief
- *      1 (yes)
- *      0 (no)
- * @param c
- * @return int
- *
- */
 int isGtidExecCommand(client* c) {
     return c->cmd->proc == gtidCommand && c->argc > GTID_COMMAN_ARGC && strcasecmp(c->argv[GTID_COMMAN_ARGC]->ptr, "exec") == 0;
 }
 
-/**
-* @brief
-*      gtid.auto {comment} set k v => gtid {gtid_str} {dbid} {comment}
-*
-*/
+/* gtid.auto {comment} set k v => gtid {gtid_str} {dbid} {comment} */
 void gtidAutoCommand(client* c) {
     if(strncmp(c->argv[1]->ptr, "/*", 2) != 0) {
         addReplyErrorFormat(c,"gtid.auto comment format error:%s", (char*)c->argv[1]->ptr);
@@ -80,12 +61,13 @@ end:
  *      3. gtid A:1 {db} \/\*comment\*\/ set k v
  *
  */
+#define GTID_UUID_PURGE_INTERVAL 16
 void gtidCommand(client *c) {
     sds gtid = c->argv[1]->ptr;
     long long gno = 0;
-    int sid_len = 0;
-    char* sid = uuidGnoDecode(gtid, sdslen(gtid), &gno, &sid_len);
-    if (sid == NULL) {
+    int uuid_len = 0;
+    char* uuid = uuidGnoDecode(gtid, sdslen(gtid), &gno, &uuid_len);
+    if (uuid == NULL) {
         addReplyErrorFormat(c,"gtid format error:%s", gtid);
         return;
     }
@@ -97,7 +79,7 @@ void gtidCommand(client *c) {
         addReplyError(c,"DB index is out of range");
         return;
     }
-    uuidSet* uuid_set = gtidSetFindUuidSet(server.gtid_executed, sid, sid_len);
+    uuidSet* uuid_set = gtidSetFind(server.gtid_executed, uuid, uuid_len);
     if(uuid_set != NULL && uuidSetContains(uuid_set, gno)) {
         sds args = sdsempty();
         for (int i=1, len=GTID_COMMAN_ARGC + 1; i < len && sdslen(args) < 128; i++) {
@@ -109,6 +91,7 @@ void gtidCommand(client *c) {
             //clean multi queue
             discardTransaction(c);
         }
+        server.gtid_ignored_cmd_count++;
         return;
     }
     int argc = c->argc;
@@ -157,31 +140,43 @@ void gtidCommand(client *c) {
     int result = 0;
     if(uuid_set != NULL) {
         result = uuidSetAdd(uuid_set, gno, gno);
+
+        /* Try to purge after 16 gno added to uuid_set */
+        if (uuidSetCount(uuid_set)%GTID_UUID_PURGE_INTERVAL == 0) {
+            uuidSetPurged purged;
+            uuidSetPurge(uuid_set, server.gtid_uuid_gap_max_memory, &purged);
+            if (purged.gno_count > 0) {
+                server.gtid_last_purge_time = server.mstime;
+                server.gtid_purged_gap_count += purged.node_count;
+                server.gtid_purged_gno_count += purged.gno_count;
+                serverLog(LL_NOTICE,"[gtid] purged %.*s: gap=%ld, gno=%lld, start=%lld, end=%lld",
+                        (int)uuid_len, uuid, purged.node_count,
+                        purged.gno_count, purged.start, purged.end);
+            }
+        }
     } else {
-        result = gtidSetAdd(server.gtid_executed, sid, sid_len, gno);
+        result = gtidSetAdd(server.gtid_executed, uuid, uuid_len, gno);
     }
-    serverAssert(result == 1);
+    server.gtid_executed_cmd_count++;
+    serverAssert(result > 0);
 end:
     c->argc = argc;
     c->argv = argv;
     c->cmd = cmd;
 }
 
-/**
- * @brief
- *      when master expire, send gtid command
- * @param db
- * @param key
- * @param lazy
- *
- */
 void propagateGtidExpire(redisDb *db, robj *key, int lazy) {
     int argc = 2 + GTID_COMMAN_ARGC;
+    size_t maxlen = uuidSetEstimatedEncodeBufferSize(server.current_uuid);
+    char *buf = zmalloc(maxlen);
+    gno_t gno = uuidSetNext(server.current_uuid, 1);
+    char *uuid = server.current_uuid->uuid;
+    size_t uuid_len = server.current_uuid->uuid_len;
+    size_t len = uuidGnoEncode(buf, maxlen, uuid, uuid_len, gno);
+
     robj *argv[argc];
     argv[0] = shared.gtid;
-    char buf[uuidSetEstimatedEncodeBufferSize(server.current_uuid)];
-    size_t size = uuidSetNextEncode(server.current_uuid, 1, buf);
-    argv[1] = createObject(OBJ_STRING, sdsnewlen(buf, size));
+    argv[1] = createObject(OBJ_STRING, sdsnewlen(buf, len));
     argv[2] = createObject(OBJ_STRING, sdscatprintf(sdsempty(),
         "%d", db->id));
 
@@ -192,6 +187,7 @@ void propagateGtidExpire(redisDb *db, robj *key, int lazy) {
         feedAppendOnlyFile(server.delCommand,db->id,argv,argc);
     replicationFeedSlaves(server.slaves,db->id,argv,argc);
 
+    zfree(buf);
     decrRefCount(argv[1]);
     decrRefCount(argv[2]);
 }
@@ -200,17 +196,7 @@ int isGtidInMerge(client* c) {
     return c->gtid_in_merge;
 }
 
-/**
- * @brief
- *      normal command -> gtid command
- *      set k v  -> gtid {gtid_str} set k v
- * @param cmd
- * @param dbid
- * @param argv
- * @param argc
- * @param flags
- * @return int
- */
+/* set k v  -> gtid {gtid_str} set k v */
 int execCommandPropagateGtid(struct redisCommand *cmd, int dbid, robj **argv, int argc,
                int flags) {
     if(!isGtidEnabled()) {
@@ -235,11 +221,16 @@ int execCommandPropagateGtid(struct redisCommand *cmd, int dbid, robj **argv, in
     if (cmd == server.multiCommand) {
         return 0;
     }
-    robj *gtidArgv[argc+3]; /*FIXME: overflow? */
+    robj *gtidArgv[argc+3];
     gtidArgv[0] = shared.gtid;
-    char buf[uuidSetEstimatedEncodeBufferSize(server.current_uuid)]; /* FIXME: overflow? */
-    size_t len = uuidSetNextEncode(server.current_uuid, 1, buf);
-    gtidArgv[1] = createObject(OBJ_STRING, sdsnewlen(buf, len));/*TODO opt: use static string object */
+    size_t maxlen = uuidSetEstimatedEncodeBufferSize(server.current_uuid);
+    char *buf = zmalloc(maxlen);
+    char *uuid = server.current_uuid->uuid;
+    size_t uuid_len = server.current_uuid->uuid_len;
+    gno_t gno = uuidSetNext(server.current_uuid, 1);
+    size_t len = uuidGnoEncode(buf, maxlen, uuid, uuid_len, gno);
+
+    gtidArgv[1] = createObject(OBJ_STRING, sdsnewlen(buf, len));
     if (cmd == server.execCommand &&  server.db_at_multi != NULL) {
         gtidArgv[2] = createObject(OBJ_STRING, sdscatprintf(sdsempty(),
         "%d", server.db_at_multi->id));
@@ -258,21 +249,13 @@ int execCommandPropagateGtid(struct redisCommand *cmd, int dbid, robj **argv, in
         }
         propagate(server.gtidCommand, dbid, gtidArgv, argc+3, flags);
     }
+    zfree(buf);
     decrRefCount(gtidArgv[1]);
     decrRefCount(gtidArgv[2]);
     return 1;
 }
 
-/**
- * @brief
- *      gtid expireat command append buffer
- * @param buf
- * @param gtid
- * @param cmd
- * @param key
- * @param seconds
- * @return sds
- */
+/* gtid expireat command append buffer */
 sds catAppendOnlyGtidExpireAtCommand(sds buf, robj* gtid, robj* dbid, robj* comment, struct redisCommand *cmd,  robj *key, robj *seconds) {
     long long when;
     robj *argv[7];
@@ -314,11 +297,6 @@ sds catAppendOnlyGtidExpireAtCommand(sds buf, robj* gtid, robj* dbid, robj* comm
  *        gtid expire => gtid expireat
  *        gtid setex =>  set  + gtid expireat
  *        gtid set(ex) => set + gtid expireat
- * @param buf
- * @param cmd
- * @param argv
- * @param argc
- * @return sds
  */
 sds gtidCommandTranslate(sds buf, struct redisCommand *cmd, robj **argv, int argc) {
     if(cmd == server.gtidCommand) {
@@ -373,48 +351,31 @@ sds gtidCommandTranslate(sds buf, struct redisCommand *cmd, robj **argv, int arg
 }
 
 
-/**
- * @brief
- *      gtid.lwm command
- * @param c
- */
 void gtidLwmCommand(client* c) {
-    sds sid = c->argv[1]->ptr;
+    sds uuid = c->argv[1]->ptr;
     long long gno = 0;
     sds gno_str = c->argv[2]->ptr;
     if(string2ll(gno_str, sdslen(gno_str), &gno) == -1) {
         addReply(c, shared.err);
         return;
     }
-    gtidSetRaise(server.gtid_executed,sid, strlen(sid), gno);
+    gtidSetRaise(server.gtid_executed,uuid, strlen(uuid), gno);
     server.dirty++;
     addReply(c, shared.ok);
 }
 
-/**
- * @brief
- *      save rdb (add gtid field)
- * @param rdb
- * @return int
- */
 int rdbSaveGtidInfoAuxFields(rio* rdb) {
-    char gtid_str[gtidSetEstimatedEncodeBufferSize(server.gtid_executed)];
-    size_t gtid_str_len = gtidSetEncode(server.gtid_executed, gtid_str);
-    if (rdbSaveAuxField(rdb, "gtid", 4, gtid_str, gtid_str_len)
-        == -1) {
+    size_t maxlen = gtidSetEstimatedEncodeBufferSize(server.gtid_executed);
+    char *gtid_str = zmalloc(maxlen);
+    size_t gtid_str_len = gtidSetEncode(gtid_str, maxlen, server.gtid_executed);
+    if (rdbSaveAuxField(rdb, "gtid", 4, gtid_str, gtid_str_len) == -1) {
+        zfree(gtid_str);
         return -1;
     }
+    zfree(gtid_str);
     return 1;
 }
 
-/**
- * @brief
- *
- * @param key
- * @param val
- * @return int
- *
- */
 int LoadGtidInfoAuxFields(robj* key, robj* val) {
     if (!strcasecmp(key->ptr, "gtid")) {
         if(server.gtid_executed != NULL) {
@@ -422,22 +383,17 @@ int LoadGtidInfoAuxFields(robj* key, robj* val) {
             server.gtid_executed = NULL;
         }
         server.gtid_executed = gtidSetDecode(val->ptr, sdslen(val->ptr));
-        server.current_uuid = gtidSetFindUuidSet(server.gtid_executed, server.runid, strlen(server.runid));
+        server.current_uuid = gtidSetFind(server.gtid_executed, server.runid, strlen(server.runid));
         if (server.current_uuid == NULL) {
             gtidSetAdd(server.gtid_executed, server.runid, strlen(server.runid), 0);
-            server.current_uuid = gtidSetFindUuidSet(server.gtid_executed, server.runid, strlen(server.runid));
+            server.current_uuid = gtidSetFind(server.gtid_executed, server.runid, strlen(server.runid));
         }
         return 1;
     }
     return 0;
 }
 
-/**
- * @brief
- *      ctrip.merge_start {gid [crdt]}
- * @param c
- *
- */
+/* ctrip.merge_start {gid [crdt]} */
 void ctripMergeStartCommand(client* c) {
     //not support crdt gid
     // server.gtid_in_merge = 1;
@@ -446,21 +402,13 @@ void ctripMergeStartCommand(client* c) {
     server.dirty++;
 }
 
-/**
- * @brief
- *      ctrip.merge_set gid 1 version 1.0
- * @param c
- */
+/* ctrip.merge_set gid 1 version 1.0 */
 void ctripMergeSetCommand(client* c) {
     //will set gid bind to client
     UNUSED(c);
 }
 
-/**
- * @brief
- *      merge key(string) value(robj) expire(long long) lfu_freq lru_idle
- * @param c
- */
+/* merge key(string) value(robj) expire(long long) lfu_freq lru_idle */
 void ctripMergeCommand(client* c) {
     if(c->gtid_in_merge == 0) {
         addReplyErrorFormat(c, "full sync failed");
@@ -559,11 +507,7 @@ error:
     c->gtid_in_merge = 0;
 }
 
-/**
- * @brief
- *      ctrip.merge_end {gtid_set} {gid}
- * @param c
- */
+/* ctrip.merge_end {gtid_set} {gid} */
 void ctripMergeEndCommand(client* c) {
     if(c->gtid_in_merge == 0) {
         addReplyErrorFormat(c, "full sync failed");
@@ -572,16 +516,10 @@ void ctripMergeEndCommand(client* c) {
     c->gtid_in_merge = 0;
     gtidSet* gtid_set = gtidSetDecode(c->argv[1]->ptr, sdslen(c->argv[1]->ptr));
     gtidSetMerge(server.gtid_executed, gtid_set);
-    gtidSetFree(gtid_set);
     server.dirty++;
     addReply(c, shared.ok);
 }
 
-/**
- * @brief
- *      robj encode (use test ctrip.merge command)
- * @param c
- */
 void gtidGetRobjCommand(client* c) {
     robj* key = c->argv[1];
     rio payload;
@@ -595,6 +533,125 @@ void gtidGetRobjCommand(client* c) {
         sdsfree(payload.io.buffer.ptr);
     } else {
         addReplyNull(c);
+    }
+
+}
+
+/* xpipe use info gtid to collect gtid gap string, but gap can be large
+   and info command are often use to collect metric, encode gap into info
+   might cause latency. To keep compatible without affecting metric
+collect: info gtid expose complete gap info, info all & info expose
+gap summary. */
+sds genGtidGapString(sds info) {
+    size_t maxlen = gtidSetEstimatedEncodeBufferSize(server.gtid_executed);
+    char *buf = zcalloc(maxlen);
+    size_t len = gtidSetEncode(buf, maxlen, server.gtid_executed);
+    info = sdscatprintf(info, "all:%.*s\r\n", (int)len, buf);
+    zfree(buf);
+    return info;
+}
+
+sds genGtidStatString(sds info) {
+    gtidStat stat;
+    gtidSetGetStat(server.gtid_executed, &stat);
+    info = sdscatprintf(info,
+            "gtid_used_memory:%lu\r\n"
+            "gtid_uuid_count:%lu\r\n"
+            "gtid_gap_count:%lu\r\n"
+            "gtid_gno_count:%lld\r\n"
+            "gtid_purged_gap_count:%lu\r\n"
+            "gtid_purged_gno_count:%lld\r\n"
+            "gtid_last_purge_time:%ld\r\n"
+            "gtid_executed_cmd_count:%lu\r\n"
+            "gtid_ignored_cmd_count:%lu\r\n",
+            stat.used_memory,
+            stat.uuid_count,
+            stat.gap_count,
+            stat.gno_count,
+            server.gtid_purged_gap_count,
+            server.gtid_purged_gno_count,
+            server.gtid_last_purge_time,
+            server.gtid_executed_cmd_count,
+            server.gtid_ignored_cmd_count);
+
+    return info;
+}
+
+sds catGtidStatString(sds info, gtidStat *stat) {
+    return sdscatprintf(info,
+            "uuid_count:%ld,used_memory:%ld,gap_count:%ld,gno_count:%lld",
+            stat->uuid_count, stat->used_memory, stat->gap_count,
+            stat->gno_count);
+}
+
+/* gtid manage command */
+void gtidxCommand(client *c) {
+    if (c->argc == 2 && !strcasecmp(c->argv[1]->ptr,"help")) {
+        const char *help[] = {
+            "LIST [<uuid>]",
+            "    List gtid or uuid(if specified) gaps.",
+            "STAT [<uuid>]",
+            "    Show gtid or uuid(if specified) stat.",
+            "REMOVE <uuid>",
+            "    Return uuid.",
+            NULL
+        };
+        addReplyHelp(c, help);
+    } else if (!strcasecmp(c->argv[1]->ptr,"list") && (c->argc == 2 || c->argc == 3)) {
+        char *buf;
+        size_t maxlen, len;
+        if (c->argc == 2) {
+            maxlen = gtidSetEstimatedEncodeBufferSize(server.gtid_executed);
+            buf = zcalloc(maxlen);
+            len = gtidSetEncode(buf, maxlen, server.gtid_executed);
+            addReplyBulkCBuffer(c, buf, len);
+            zfree(buf);
+        } else {
+            sds uuid = c->argv[2]->ptr;
+            uuidSet *uuid_set = gtidSetFind(server.gtid_executed, uuid, sdslen(uuid));
+            if (uuid_set) {
+                maxlen = uuidSetEstimatedEncodeBufferSize(uuid_set);
+                buf = zcalloc(maxlen);
+                len = uuidSetEncode(buf, maxlen, uuid_set);
+                addReplyBulkCBuffer(c, buf, len);
+                zfree(buf);
+            } else {
+                addReplyErrorFormat(c, "uuid not found:%s", uuid);
+            }
+        }
+    } else if (!strcasecmp(c->argv[1]->ptr,"stat") && (c->argc == 2 || c->argc == 3)) {
+        gtidStat stat;
+        sds stat_str;
+        if (c->argc == 2) {
+            gtidSetGetStat(server.gtid_executed, &stat);
+            stat_str = sdscatprintf(sdsempty(), "all:");
+            stat_str = catGtidStatString(stat_str, &stat);
+            addReplyBulkSds(c, stat_str);
+        } else {
+            sds uuid = c->argv[2]->ptr, stat_str;
+            uuidSet *uuid_set = gtidSetFind(server.gtid_executed, uuid, sdslen(uuid));
+            if (uuid_set == NULL) {
+                addReplyErrorFormat(c, "uuid not found:%s", uuid);
+            } else {
+                uuidSetGetStat(uuid_set, &stat);
+                stat_str = sdscatprintf(sdsempty(), "%s:", uuid);
+                stat_str = catGtidStatString(stat_str, &stat);
+                addReplyBulkSds(c, stat_str);
+            }
+        }
+
+    } else if (!strcasecmp(c->argv[1]->ptr,"remove") && c->argc == 3) {
+        int removed = 0;
+        sds uuid = c->argv[2]->ptr;
+        if (server.current_uuid->uuid_len == sdslen(uuid) &&
+                memcmp(server.current_uuid->uuid, uuid, sdslen(uuid)) == 0) {
+            addReplyLongLong(c, 0);
+        } else {
+            removed = gtidSetRemove(server.gtid_executed, uuid, sdslen(uuid));
+            addReplyLongLong(c, removed);
+        }
+    } else {
+        addReplySubcommandSyntaxError(c);
     }
 
 }
