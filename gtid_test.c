@@ -168,6 +168,7 @@ int test_uuidSetInvalidArg() {
     uuidSetFree(uuid_set);
 
     uuid_set = uuidSetDecode("A:foobar",8);
+    uuidSetFree(uuid_set);
     uuid_set = uuidSetDecode("A:2-1",5);
     uuidSetFree(uuid_set);
 
@@ -836,6 +837,52 @@ int test_uuidSetNextEncode() {
     return 1;
 }
 
+#define GTID_INTERVAL_MEMORY (sizeof(gtidIntervalNode) + sizeof(gtidIntervalNode*))
+
+int test_uuidSetPurge() {
+    char *repr;
+    uuidSet *uuid_set;
+    uuidSetPurged purged;
+
+    uuid_set = uuidSetNew("A",1);
+    uuidSetPurge(uuid_set,0,&purged);
+    assert(purged.node_count == 0 && purged.end == 0);
+
+    uuidSetAdd(uuid_set, 3, 5);
+    uuidSetPurge(uuid_set,0,&purged);
+    assert(purged.node_count == 0 && purged.end == 0);
+    assert(uuidSetCount(uuid_set) == 3);
+
+    uuidSetFree(uuid_set);
+
+    repr = "A:1:3:5:7:9:11:13:15:17:19";
+    uuid_set = uuidSetDecode(repr, strlen(repr));
+
+    uuidSetPurge(uuid_set, 20*GTID_INTERVAL_MEMORY, &purged);
+    assert(purged.node_count == 0 && purged.end == 0);
+    assert(uuidSetCount(uuid_set) == 10);
+
+    uuidSetPurge(uuid_set, 10*GTID_INTERVAL_MEMORY, &purged);
+    assert(purged.node_count == 0 && purged.end == 0);
+    assert(uuidSetCount(uuid_set) == 10);
+
+    uuidSetPurge(uuid_set, 5*GTID_INTERVAL_MEMORY, &purged);
+    assert(purged.node_count == 5 && purged.end == 11);
+    assert(uuidSetCount(uuid_set) == 15);
+
+    uuidSetPurge(uuid_set, 5*GTID_INTERVAL_MEMORY, &purged);
+    assert(purged.node_count == 0 && purged.end == 0);
+    assert(uuidSetCount(uuid_set) == 15);
+
+    uuidSetPurge(uuid_set, 0, &purged);
+    assert(purged.node_count == 4 && purged.end == 19);
+    assert(uuidSetCount(uuid_set) == 19);
+
+    uuidSetFree(uuid_set);
+
+    return 1;
+}
+
 int test_gtidSetNew() {
     gtidSet* gtid_set = gtidSetNew();
     assert(gtid_set->header == NULL);
@@ -1152,7 +1199,58 @@ int test_gtidSetInvalidArg() {
     assert(gtidSetAppend(gtid_set, NULL) == 0);
 
     assert(gtidSetFind(gtid_set, NULL, 0) == NULL);
+    gtidSetFree(gtid_set);
 
+    return 1;
+}
+
+int test_gtidStat() {
+    gtidSet *gtid_set = gtidSetNew();
+    uuidSet *uuid_set;
+    gtidStat stat;
+
+    uuid_set = uuidSetDecode("A:1-2:7-8",9);
+    assert(uuid_set != NULL);
+    uuidSetGetStat(uuid_set, &stat);
+    assert(stat.uuid_count == 1 && stat.used_memory == 3*GTID_INTERVAL_MEMORY
+            && stat.gap_count == 2 && stat.gno_count == 4);
+
+    gtidSetAppend(gtid_set, uuid_set);
+    gtidSetGetStat(gtid_set, &stat);
+    assert(stat.uuid_count == 1 && stat.used_memory == 3*GTID_INTERVAL_MEMORY
+            && stat.gap_count == 2 && stat.gno_count == 4);
+
+    uuid_set = uuidSetDecode("B:3-4:10-11",11);
+    uuidSetGetStat(uuid_set, &stat);
+    assert(stat.uuid_count == 1 && stat.used_memory == 3*GTID_INTERVAL_MEMORY
+            && stat.gap_count == 2 && stat.gno_count == 4);
+
+    gtidSetAppend(gtid_set, uuid_set);
+    gtidSetGetStat(gtid_set, &stat);
+    assert(stat.uuid_count == 2 && stat.used_memory == 6*GTID_INTERVAL_MEMORY
+            && stat.gap_count == 4 && stat.gno_count == 8);
+
+    gtidSetFree(gtid_set);
+    return 1;
+}
+
+int test_gtidSetRemove() {
+    gtidSet *gtid_set = gtidSetNew();
+    uuidSet *uuid_set;
+
+    assert(gtidSetRemove(gtid_set, "A", 1) == 0);
+    uuid_set = uuidSetDecode("A:1-2:7-8",9);
+    gtidSetAppend(gtid_set, uuid_set);
+    uuid_set = uuidSetDecode("B:3-4:10-11",11);
+    gtidSetAppend(gtid_set, uuid_set);
+
+    assert(gtidSetRemove(gtid_set, "C", 1) == 0);
+    assert(gtidSetRemove(gtid_set, "A", 1) == 1);
+    assert(gtidSetRemove(gtid_set, "B", 1) == 1);
+    assert(gtid_set->header == NULL && gtid_set->tail == NULL);
+    assert(gtidSetRemove(gtid_set, "A", 1) == 0);
+
+    gtidSetFree(gtid_set);
     return 1;
 }
 
@@ -1188,6 +1286,8 @@ int test_api(void) {
                 test_uuidSetEncode() == 1);
         test_cond("uuidSet api with invalid args",
             test_uuidSetInvalidArg() == 1);
+        test_cond("uuidSetPurge function",
+                test_uuidSetPurge() == 1);
         test_cond("gtidSetNew function",
                 test_gtidSetNew() == 1);
         test_cond("gtidSetDecode function",
@@ -1210,6 +1310,10 @@ int test_api(void) {
             test_gtidSetAppendGtidSet() == 1);
         test_cond("gtidSet api with invalid args",
             test_gtidSetInvalidArg() == 1);
+        test_cond("gtid Stat",
+            test_gtidStat() == 1);
+        test_cond("gtidSetRemove function ",
+            test_gtidSetRemove() == 1);
 
     } test_report()
     return 1;
