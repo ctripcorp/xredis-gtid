@@ -1190,7 +1190,7 @@ int test_gtidSetInvalidArg() {
 
     gtid_set = gtidSetDecode("A:3-5",5);
 
-    assert(gtidSetAdd(gtid_set, "B", 1, 1) == 0); /* uuid not found */
+    assert(gtidSetAdd(gtid_set, "B", 1, 0) == 0);
     assert(gtidSetAdd(gtid_set, "A", 1, 0) == 0);
 
     assert(gtidSetRaise(gtid_set, "A", 1, 0) == 0);
