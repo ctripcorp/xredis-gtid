@@ -108,4 +108,6 @@ void gtidSetGetStat(gtidSet *gtid_set, gtidStat *stat);
 ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid, size_t uuid_len, gno_t gno);
 char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len);
 
+const char *gtidAllocatorName();
+
 #endif  /* __REDIS_CTRIP_GTID_H */
