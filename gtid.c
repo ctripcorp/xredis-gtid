@@ -620,3 +620,7 @@ void gtidSetGetStat(gtidSet *gtid_set, gtidStat *stat) {
         uuid_set = uuid_set->next;
     }
 }
+
+const char *gtidAllocatorName() {
+    return GTID_ALLOC_LIB;
+}
