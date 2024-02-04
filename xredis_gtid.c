@@ -447,7 +447,7 @@ void ctripMergeCommand(client* c) {
     rioInitWithBuffer(&payload, c->argv[2]->ptr);
     int load_error = 0;
     if (((type = rdbLoadObjectType(&payload)) == -1) ||
-        ((val = rdbLoadObject(type, &payload, payload.io.buffer.ptr, &load_error)) == NULL))
+        ((val = rdbLoadObject(type, &payload, payload.io.buffer.ptr, &load_error, 0)) == NULL))
     {
         addReplyErrorFormat(c, "load robj error: %d, key: %s", load_error, (char*)c->argv[2]->ptr);
         sdsfree(payload.io.buffer.ptr);
