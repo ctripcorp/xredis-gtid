@@ -30,6 +30,7 @@
 #define __REDIS_CTRIP_GTID_H
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <sys/types.h>
 
  /* gno start from 1 */
@@ -46,6 +47,7 @@ typedef struct gtidIntervalNode {
 
 typedef struct gtidIntervalSkipList {
     struct gtidIntervalNode *header;
+    struct gtidIntervalNode *tail;
     size_t node_count;
     gno_t gno_count;
     int level;
@@ -83,8 +85,10 @@ uuidSet *uuidSetDup(uuidSet* uuid_set);
 ssize_t uuidSetEncode(char *buf, size_t maxlen, uuidSet* uuid_set);
 uuidSet *uuidSetDecode(char* repr, int len);
 gno_t uuidSetAdd(uuidSet* uuid_set, gno_t start, gno_t end);
+gno_t uuidSetRemove(uuidSet* uuid_set, gno_t start, gno_t end);
 gno_t uuidSetRaise(uuidSet* uuid_set, gno_t gno);
 gno_t uuidSetMerge(uuidSet* uuid_set, uuidSet* other);
+gno_t uuidSetDiff(uuidSet* uuid_set, uuidSet* other);
 gno_t uuidSetNext(uuidSet* uuid_set, int update);
 gno_t uuidSetCount(uuidSet* uuid_set);
 int uuidSetContains(uuidSet* uuid_set, gno_t gno);
@@ -94,11 +98,14 @@ void uuidSetGetStat(uuidSet *uuid_set, gtidStat *stat);
 
 gtidSet* gtidSetNew();
 void gtidSetFree(gtidSet* gtid_set);
+gtidSet* gtidSetDup(gtidSet *gtid_set);
 gtidSet *gtidSetDecode(char* repr, size_t len);
 ssize_t gtidSetEncode(char *buf, size_t maxlen, gtidSet* gtid_set);
-gno_t gtidSetAdd(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
+gno_t gtidSetAddRange(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t start, gno_t end);
+#define gtidSetAdd(gtid_set, uuid, uuid_len, gno) gtidSetAddRange(gtid_set, uuid, uuid_len, gno, gno)
 gno_t gtidSetRaise(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
 gno_t gtidSetMerge(gtidSet* gtid_set, gtidSet* other);
+gno_t gtidSetDiff(gtidSet* gtid_set, gtidSet* other);
 gno_t gtidSetAppend(gtidSet *gtid_set, uuidSet *uuid_set);
 uuidSet* gtidSetFind(gtidSet* gtid_set,const char* uuid, size_t len);
 int gtidSetRemove(gtidSet* gtid_set, const char *uuid, size_t uuid_len);
@@ -109,5 +116,55 @@ ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid, size_t uuid_le
 char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len);
 
 const char *gtidAllocatorName();
+
+typedef uint16_t segoff_t;
+
+#define SEGOFF_MAX UINT16_MAX
+#define SEGMENT_SIZE (SEGOFF_MAX+1)
+
+/* assuming every command is 1024 byte */
+#define GTID_SEGMENT_NGNO_DEFAULT (SEGMENT_SIZE/1024)
+
+typedef struct gtidSegment {
+    struct gtidSegment *next;
+    struct gtidSegment *prev;
+    char *uuid;
+    size_t uuid_len;
+    long long base_offset;
+    gno_t base_gno;
+    size_t tgno; /* trimmed gno count */
+    size_t ngno; /* gno count */
+    size_t capacity; /* gno capacity */
+    segoff_t *deltas;
+} gtidSegment;
+
+gtidSegment *gtidSegmentNew();
+void gtidSegmentReset(gtidSegment *seg, const char *uuid, size_t uuid_len, gno_t base_gno, long long base_offset);
+void gtidSegmentAppend(gtidSegment *seg, long long offset);
+void gtidSegmentFree(gtidSegment *seg);
+
+typedef struct gtidSeq {
+    size_t segment_size;
+    size_t nsegment;
+    size_t nfreeseg;
+    size_t nsegment_deltas; /* deltas count of occupied segment list */
+    size_t nfreeseg_deltas; /* deltas count of vacant segment list */
+    struct gtidSegment *firstseg; /* head of occupied segment list */
+    struct gtidSegment *lastseg; /* tail of occupied segment list */
+    struct gtidSegment *freeseg; /* head of vacant segment list */
+} gtidSeq;
+
+typedef struct gtidSeqStat {
+   size_t used_memory;
+   size_t segment_memory;
+   size_t freeseg_memory;
+} gtidSeqStat;
+
+gtidSeq *gtidSeqCreate();
+void gtidSeqDestroy(gtidSeq *seq);
+void gtidSeqAppend(gtidSeq *seq, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
+void gtidSeqTrim(gtidSeq *seq, long long until);
+long long gtidSeqXsync(gtidSeq *seq, gtidSet *req, gtidSet **pcont);
+void gtidSeqGetStat(gtidSeq *seq, gtidSeqStat *stat);
 
 #endif  /* __REDIS_CTRIP_GTID_H */
