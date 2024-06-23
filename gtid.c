@@ -379,6 +379,10 @@ gno_t gtidIntervalSkipListNext(gtidIntervalSkipList *gsl, int update) {
     return gno;
 }
 
+gno_t gtidIntervalSkipListCurrent(gtidIntervalSkipList *gsl) {
+    return gsl->tail->end;
+}
+
 /* return -1 if encode failed, otherwise return encoded length. */
 ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid,
         size_t uuid_len, gno_t gno) {
@@ -566,6 +570,10 @@ int uuidSetContains(uuidSet* uuid_set, gno_t gno) {
 
 gno_t uuidSetNext(uuidSet* uuid_set, int update) {
     return gtidIntervalSkipListNext(uuid_set->intervals, update);
+}
+
+gno_t uuidSetCurrent(uuidSet* uuid_set) {
+    return gtidIntervalSkipListCurrent(uuid_set->intervals);
 }
 
 /* Purge to keep uuidSet consumed memory under limit */

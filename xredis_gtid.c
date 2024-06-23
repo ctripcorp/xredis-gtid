@@ -537,6 +537,55 @@ void gtidGetRobjCommand(client* c) {
 
 }
 
+void ctrip_createReplicationBacklog(void) {
+    serverAssert(server.gtid_seq == NULL);
+    createReplicationBacklog();
+    server.gtid_seq = gtidSeqCreate();
+}
+
+void ctrip_resizeReplicationBacklog(long long newsize) {
+    long long oldsize = server.repl_backlog_size;
+    resizeReplicationBacklog(newsize);
+    if (server.repl_backlog != NULL && oldsize != server.repl_backlog_size) {
+        /* realloc a new gtidSeq to keep gtid_seq sync with backlog, see
+         * resizeReplicationBacklog for more details. */
+        gtidSeqDestroy(server.gtid_seq);
+        server.gtid_seq = gtidSeqCreate();
+    }
+}
+
+void ctrip_freeReplicationBacklog(void) {
+    freeReplicationBacklog();
+    if (server.gtid_seq != NULL) {
+        gtidSeqDestroy(server.gtid_seq);
+        server.gtid_seq = NULL;
+    }
+}
+
+void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv,
+        int argc, const char *uuid, size_t uuid_len, gno_t gno) {
+    if (uuid != NULL && gno >= GNO_INITIAL && server.gtid_seq) {
+        gtidSeqAppend(server.gtid_seq,uuid,uuid_len,gno,
+                server.master_repl_offset);
+    }
+
+    replicationFeedSlaves(slaves,dictid,argv,argc);
+
+    if (server.gtid_seq) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
+}
+
+void ctrip_replicationFeedSlavesFromMasterStream(list *slaves, char *buf,
+        size_t buflen, const char *uuid, size_t uuid_len, gno_t gno) {
+    if (uuid != NULL && gno >= GNO_INITIAL && server.gtid_seq) {
+        gtidSeqAppend(server.gtid_seq,uuid,uuid_len,gno,
+                server.master_repl_offset);
+    }
+
+    replicationFeedSlavesFromMasterStream(slaves,buf,buflen);
+
+    if (server.gtid_seq) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
+}
+
 /* xpipe use info gtid to collect gtid gap string, but gap can be large
    and info command are often use to collect metric, encode gap into info
    might cause latency. To keep compatible without affecting metric
