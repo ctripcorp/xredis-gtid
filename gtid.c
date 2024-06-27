@@ -791,6 +791,14 @@ gno_t gtidSetDiff(gtidSet* dst, gtidSet* src) {
     return removed;
 }
 
+gno_t gtidSetCount(gtidSet *gtid_set) {
+    gno_t count = 0;
+    for (uuidSet *cur = gtid_set->header; cur != NULL; cur = cur->next) {
+        count += uuidSetCount(cur);
+    }
+    return count;
+}
+
 void gtidStatMerge(gtidStat *sum, gtidStat *one) {
     sum->uuid_count += one->uuid_count;
     sum->used_memory += one->used_memory;
@@ -1042,6 +1050,10 @@ long long gtidSeqXsync(gtidSeq *seq, gtidSet *req, gtidSet **pcont) {
     }
 
     return offset;
+}
+
+gtidSet *gtidSeqPsync(gtidSeq *seq, long long offset) {
+    return NULL;
 }
 
 void gtidSeqGetStat(gtidSeq *seq, gtidSeqStat *stat) {

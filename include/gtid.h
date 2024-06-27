@@ -110,6 +110,7 @@ gno_t gtidSetDiff(gtidSet* gtid_set, gtidSet* other);
 gno_t gtidSetAppend(gtidSet *gtid_set, uuidSet *uuid_set);
 uuidSet* gtidSetFind(gtidSet* gtid_set,const char* uuid, size_t len);
 int gtidSetRemove(gtidSet* gtid_set, const char *uuid, size_t uuid_len);
+gno_t gtidSetCount(gtidSet *gtid_set);
 size_t gtidSetEstimatedEncodeBufferSize(gtidSet* gtid_set);
 void gtidSetGetStat(gtidSet *gtid_set, gtidStat *stat);
 
@@ -166,6 +167,7 @@ void gtidSeqDestroy(gtidSeq *seq);
 void gtidSeqAppend(gtidSeq *seq, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
 void gtidSeqTrim(gtidSeq *seq, long long until);
 long long gtidSeqXsync(gtidSeq *seq, gtidSet *req, gtidSet **pcont);
+gtidSet *gtidSeqPsync(gtidSeq *seq, long long offset);
 void gtidSeqGetStat(gtidSeq *seq, gtidSeqStat *stat);
 
 #endif  /* __REDIS_CTRIP_GTID_H */

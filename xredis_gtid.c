@@ -6,52 +6,10 @@ int isGtidEnabled() {
     return server.gtid_enabled;
 }
 
-
 int isGtidExecCommand(client* c) {
-    return c->cmd->proc == gtidCommand && c->argc > GTID_COMMAN_ARGC && strcasecmp(c->argv[GTID_COMMAN_ARGC]->ptr, "exec") == 0;
+    return c->cmd->proc == gtidCommand && c->argc > GTID_COMMAN_ARGC &&
+        strcasecmp(c->argv[GTID_COMMAN_ARGC]->ptr, "exec") == 0;
 }
-
-/* gtid.auto {comment} set k v => gtid {gtid_str} {dbid} {comment} */
-void gtidAutoCommand(client* c) {
-    if(strncmp(c->argv[1]->ptr, "/*", 2) != 0) {
-        addReplyErrorFormat(c,"gtid.auto comment format error:%s", (char*)c->argv[1]->ptr);
-        return;
-    }
-    int argc = c->argc;
-    robj** argv = c->argv;
-    struct redisCommand* cmd = c->cmd;
-    c->argc = argc - 2;
-    c->argv = argv + 2;
-    c->cmd = c->lastcmd = lookupCommand(c->argv[0]->ptr);
-    if (!c->cmd) {
-        sds args = sdsempty();
-        int i;
-        for (i=1; i < c->argc && sdslen(args) < 128; i++)
-            args = sdscatprintf(args, "`%.*s`, ", 128-(int)sdslen(args), (char*)c->argv[i]->ptr);
-        serverLog(LL_WARNING, "unknown command `%s`, with args beginning with: %s",
-            (char*)c->argv[0]->ptr, args);
-        rejectCommandFormat(c,"unknown command `%s`, with args beginning with: %s",
-            (char*)c->argv[0]->ptr, args);
-        sdsfree(args);
-        goto end;
-        return;
-    } else if ((c->cmd->arity > 0 && c->cmd->arity != c->argc) ||
-               (c->argc < -c->cmd->arity)) {
-        serverLog(LL_WARNING,"wrong number of arguments for '%s' command",
-            c->cmd->name);
-        rejectCommandFormat(c,"wrong number of arguments for '%s' command",
-            c->cmd->name);
-        goto end;
-        return;
-    }
-    c->cmd->proc(c);
-    server.dirty++;
-end:
-    c->argc = argc;
-    c->argv = argv;
-    c->cmd = cmd;
-}
-
 
 /**
  * @brief
@@ -238,17 +196,10 @@ int execCommandPropagateGtid(struct redisCommand *cmd, int dbid, robj **argv, in
         gtidArgv[2] = createObject(OBJ_STRING, sdscatprintf(sdsempty(),
         "%d", dbid));
     }
-    if(cmd == server.gtidAutoCommand) {
-        for(int i = 0; i < argc-1; i++) {
-            gtidArgv[i+3] = argv[i+1];
-        }
-        propagate(server.gtidCommand, dbid, gtidArgv, argc+2, flags);
-    } else {
-        for(int i = 0; i < argc; i++) {
-            gtidArgv[i+3] = argv[i];
-        }
-        propagate(server.gtidCommand, dbid, gtidArgv, argc+3, flags);
+    for(int i = 0; i < argc; i++) {
+        gtidArgv[i+3] = argv[i];
     }
+    propagate(server.gtidCommand, dbid, gtidArgv, argc+3, flags);
     zfree(buf);
     decrRefCount(gtidArgv[1]);
     decrRefCount(gtidArgv[2]);
@@ -256,7 +207,8 @@ int execCommandPropagateGtid(struct redisCommand *cmd, int dbid, robj **argv, in
 }
 
 /* gtid expireat command append buffer */
-sds catAppendOnlyGtidExpireAtCommand(sds buf, robj* gtid, robj* dbid, robj* comment, struct redisCommand *cmd,  robj *key, robj *seconds) {
+sds catAppendOnlyGtidExpireAtCommand(sds buf, robj* gtid, robj* dbid,
+        robj* comment, struct redisCommand *cmd,  robj *key, robj *seconds) {
     long long when;
     robj *argv[7];
 
@@ -393,122 +345,15 @@ int LoadGtidInfoAuxFields(robj* key, robj* val) {
     return 0;
 }
 
-/* ctrip.merge_start {gid [crdt]} */
-void ctripMergeStartCommand(client* c) {
-    //not support crdt gid
-    // server.gtid_in_merge = 1;
+/* gtid.merge.start {gid [crdt]} */
+void gtidMergeStartCommand(client* c) {
     c->gtid_in_merge = 1;
     addReply(c, shared.ok);
     server.dirty++;
 }
 
-/* ctrip.merge_set gid 1 version 1.0 */
-void ctripMergeSetCommand(client* c) {
-    //will set gid bind to client
-    UNUSED(c);
-}
-
-/* merge key(string) value(robj) expire(long long) lfu_freq lru_idle */
-void ctripMergeCommand(client* c) {
-    if(c->gtid_in_merge == 0) {
-        addReplyErrorFormat(c, "full sync failed");
-        return;
-    }
-    //not support crdt gid
-
-    robj *key = c->argv[1];
-    rio payload;
-    robj *val = NULL;
-    // check val
-    if(verifyDumpPayload(c->argv[2]->ptr, sdslen(c->argv[2]->ptr)) == C_ERR) {
-        addReplyErrorFormat(c, "value robj load error: %s", (char*)c->argv[2]->ptr);
-        goto error;
-    }
-    int type = -1;
-    long long expiretime = -1, now = mstime();
-    //check expiretime
-    if(!string2ll((sds)c->argv[3]->ptr, sdslen((sds)c->argv[3]->ptr), &expiretime)) {
-        addReplyErrorFormat(c, "expiretime string2ll error: %s", (char*)c->argv[3]->ptr);
-        goto error;
-    }
-    //check lfu_freq lru_idle
-    long long lfu_freq = -1, lru_idle = -1;
-    if(c->argc == 6) {
-        if(!string2ll((sds)c->argv[4]->ptr, sdslen(c->argv[4]->ptr), &lfu_freq)) {
-            addReplyErrorFormat(c, "lfu_freq string2ll error: %s", (char*)c->argv[4]->ptr);
-            goto error;
-        }
-        if(!string2ll((sds)c->argv[5]->ptr, sdslen(c->argv[5]->ptr), &lru_idle)) {
-            addReplyErrorFormat(c, "lru_idle string2ll error: %s", (char*)c->argv[5]->ptr);
-            goto error;
-        }
-    }
-
-    rioInitWithBuffer(&payload, c->argv[2]->ptr);
-    int load_error = 0;
-    if (((type = rdbLoadObjectType(&payload)) == -1) ||
-        ((val = rdbLoadObject(type, &payload, payload.io.buffer.ptr, &load_error, 0)) == NULL))
-    {
-        addReplyErrorFormat(c, "load robj error: %d, key: %s", load_error, (char*)c->argv[2]->ptr);
-        sdsfree(payload.io.buffer.ptr);
-        goto error;
-    }
-
-    /* Check if the key already expired. This function is used when loading
-        * an RDB file from disk, either at startup, or when an RDB was
-        * received from the master. In the latter case, the master is
-        * responsible for key expiry. If we would expire keys here, the
-        * snapshot taken by the master may not be reflected on the slave.
-        * Similarly if the RDB is the preamble of an AOF file, we want to
-        * load all the keys as they are, since the log of operations later
-        * assume to work in an exact keyspace state. */
-    if (iAmMaster() &&
-        expiretime != -1 && expiretime < now)
-    {
-        decrRefCount(val);
-    } else {
-        /* Add the new object in the hash table */
-        sds keydup = sdsdup(key->ptr); /* moved to db.dict by dbAddRDBLoad */
-
-        int added = dbAddRDBLoad(c->db,keydup,val);
-        if (!added) {
-            /**
-             * When it's set we allow new keys to replace the current
-                    keys with the same name.
-             */
-            dbSyncDelete(c->db,key);
-            dbAddRDBLoad(c->db,keydup,val);
-        }
-
-        /* Set the expire time if needed */
-        if (expiretime != -1) {
-            setExpire(NULL,c->db,key,expiretime);
-        }
-
-        /* Set usage information (for eviction). */
-        long long lru_clock = LRU_CLOCK();
-        if(c->argc== 6) {
-            objectSetLRUOrLFU(val,lfu_freq,lru_idle,lru_clock,1000);
-        }
-        /* call key space notification on key loaded for modules only */
-        moduleNotifyKeyspaceEvent(NOTIFY_LOADED, "loaded", key, c->db->id);
-    }
-
-    /* Loading the database more slowly is useful in order to test
-     * certain edge cases. */
-    if (server.key_load_delay) usleep(server.key_load_delay);
-    server.dirty++;
-    addReply(c, shared.ok);
-    return;
-error:
-    if(val != NULL) {
-        decrRefCount(val);
-    }
-    c->gtid_in_merge = 0;
-}
-
-/* ctrip.merge_end {gtid_set} {gid} */
-void ctripMergeEndCommand(client* c) {
+/* ctrip.merge.end {gtid_set} {gid} */
+void gtidMergeEndCommand(client* c) {
     if(c->gtid_in_merge == 0) {
         addReplyErrorFormat(c, "full sync failed");
         return;
@@ -520,21 +365,42 @@ void ctripMergeEndCommand(client* c) {
     addReply(c, shared.ok);
 }
 
-void gtidGetRobjCommand(client* c) {
-    robj* key = c->argv[1];
-    rio payload;
-    robj* val;
-    if ((val = lookupKeyReadOrReply(c,c->argv[1],shared.null[c->resp])) == NULL)
-        return;
+void shiftServerReplMode(int mode) {
+    serverAssert(mode != REPL_MODE_UNSET);
+    if (server.repl_mode->mode == mode) return;
+    server.prev_repl_mode->from = server.repl_mode->from;
+    server.prev_repl_mode->mode = server.repl_mode->mode;
+    server.repl_mode->from = server.master_repl_offset;
+    server.repl_mode->mode = mode;
+}
 
-    if (val) {
-        createDumpPayload(&payload, val, key);
-        addReplyBulkCBuffer(c, payload.io.buffer.ptr, sdslen(payload.io.buffer.ptr));
-        sdsfree(payload.io.buffer.ptr);
-    } else {
-        addReplyNull(c);
+static inline void updateServerReplMode() {
+    /* Note that we must not update from in replMode: from indicates the
+     * offset that repl mode can switch. */
+    serverAssert(server.repl_mode->mode != REPL_MODE_UNSET);
+    if (server.prev_repl_mode->mode != REPL_MODE_UNSET) {
+        if (server.repl_backlog_off >= server.repl_mode->from) {
+            server.prev_repl_mode->mode = REPL_MODE_UNSET;
+        }
     }
+}
 
+int locateServerReplMode(long long offset, int *switch_mode) {
+    serverAssert(server.repl_mode->mode != REPL_MODE_UNSET);
+    if (offset >= server.repl_mode->from) {
+        *switch_mode = offset == server.repl_mode->from;
+        return server.repl_mode->mode;
+    }
+    if (server.prev_repl_mode->mode == REPL_MODE_UNSET) {
+        *switch_mode = 0;
+        return REPL_MODE_UNSET;
+    }
+    if (offset >= server.prev_repl_mode->from) {
+        *switch_mode = offset == server.repl_mode->from;
+        return server.prev_repl_mode->mode;
+    }
+    *switch_mode = 0;
+    return REPL_MODE_UNSET;
 }
 
 void ctrip_createReplicationBacklog(void) {
@@ -572,6 +438,8 @@ void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv,
     replicationFeedSlaves(slaves,dictid,argv,argc);
 
     if (server.gtid_seq) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
+
+    updateServerReplMode();
 }
 
 void ctrip_replicationFeedSlavesFromMasterStream(list *slaves, char *buf,
@@ -584,6 +452,222 @@ void ctrip_replicationFeedSlavesFromMasterStream(list *slaves, char *buf,
     replicationFeedSlavesFromMasterStream(slaves,buf,buflen);
 
     if (server.gtid_seq) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
+
+    updateServerReplMode();
+}
+
+/* like addReplyReplicationBacklog, but send backlog untill repl mode
+ * switch, return 1 if mode switched. */
+int ctrip_addReplyReplicationBacklog(client *c, long long offset,
+        long long *added) {
+    long long bak_histlen;
+    if (server.prev_repl_mode->mode == REPL_MODE_UNSET ||
+            server.repl_mode->mode == REPL_MODE_UNSET ||
+            offset >= server.repl_mode->from) {
+        *added = addReplyReplicationBacklog(c,offset);
+        return 0;
+    }
+    /* Hack: shirnk repl_backlog_histlen so that addReplyReplicationBacklog
+     * would send backlog untill repl mode switch. */
+    bak_histlen = server.repl_backlog_histlen;
+    server.repl_backlog_histlen = server.repl_mode->from -
+        server.repl_backlog_off;
+    serverLog(LL_NOTICE, "[PSYNC-ctrip] Shrink histlen from %lld to %lld",
+            bak_histlen, server.repl_backlog_histlen);
+    addReplyReplicationBacklog(c,offset);
+    server.repl_backlog_histlen = bak_histlen;
+    return 1;
+}
+
+int masterSetupPartialSynchronization(client *c, long long psync_offset,
+        char *buf, int buflen) {
+    int close_slave;
+    long long psync_len;
+
+    /* see masterTryPartialResynchronization for more details. */
+    /* If we reached this point, we are able to perform a partial xsync:
+     * 1) Set client state to make it a slave.
+     * 2) Inform the client we can continue with +XCONTINUE
+     * 3) Send the backlog data (from the offset to the end) to the slave. */
+    c->flags |= CLIENT_SLAVE;
+    c->replstate = SLAVE_STATE_ONLINE;
+    c->repl_ack_time = server.unixtime;
+    c->repl_put_online_on_ack = 0;
+    listAddNodeTail(server.slaves,c);
+    /* We can't use the connection buffers since they are used to accumulate
+     * new commands at this stage. But we are sure the socket send buffer is
+     * empty so this write will never fail actually. */
+
+    if (connWrite(c->conn,buf,buflen) != buflen) {
+        freeClientAsync(c);
+        return C_ERR;
+    }
+
+    close_slave = ctrip_addReplyReplicationBacklog(c,psync_offset,&psync_len);
+    serverLog(LL_NOTICE,
+        "Sending %lld bytes of backlog starting from offset %lld.",
+        psync_len, psync_offset);
+
+    if (close_slave) {
+        //TODO confirm that backlog will be sent and then connection closed
+        serverLog(LL_NOTICE, "Closing slave %s to switch repl mode.",
+                replicationGetSlaveName(c));
+        freeClientAsync(c);
+        //TODO return what?
+        return C_ERR;
+    }
+
+    /* Note that we don't need to set the selected DB at server.slaveseldb
+     * to -1 to force the master to emit SELECT, since the slave already
+     * has this state from the previous connection with the master. */
+
+    refreshGoodSlavesCount();
+
+    /* Fire the replica change modules event. */
+    moduleFireServerEvent(REDISMODULE_EVENT_REPLICA_CHANGE,
+                          REDISMODULE_SUBEVENT_REPLICA_CHANGE_ONLINE,
+                          NULL);
+
+    return C_OK; /* The caller can return, no full resync needed. */
+}
+
+int masterSetupPartialXsynchronization(client *c, long long psync_offset,
+        gtidSet *gtid_cont) {
+    char *gtidrepr, *buf;
+    int gtidlen, buflen, ret;
+
+    gtidlen = gtidSetEstimatedEncodeBufferSize(gtid_cont);
+    gtidrepr = zcalloc(gtidlen);
+    gtidSetEncode(gtidrepr, gtidlen, server.gtid_executed);
+    buflen = gtidlen+256;
+    buf = zcalloc(buflen);
+    serverAssert(psync_offset >= server.repl_backlog_off &&
+            psync_offset <= server.master_repl_offset);
+    buflen = snprintf(buf,buflen,
+            "+XCONTINUE GTID.SET %.*s MASTER.SID %.*s\r\n",
+             gtidlen,gtidrepr,(int)server.current_uuid->uuid_len,
+             server.current_uuid->uuid);
+    ret =  masterSetupPartialSynchronization(c,psync_offset,buf,buflen);
+    zfree(buf);
+    zfree(gtidrepr);
+    return ret;
+}
+
+int masterSetupPartialResynchronization(client *c, long long psync_offset) {
+    char buf[128];
+    int buflen;
+    serverAssert(psync_offset >= server.repl_backlog_off &&
+            psync_offset <= server.master_repl_offset);
+    buflen = snprintf(buf,sizeof(buf),"+CONTINUE %s\r\n",
+             server.current_uuid->uuid);
+    return masterSetupPartialSynchronization(c,psync_offset,buf,buflen);
+}
+
+int ctrip_masterTryPartialResynchronization(client *c) {
+    long long psync_offset, maxgap = 0;
+    gtidSet *gtid_slave = NULL, *gtid_cont = NULL, *gtid_xsync = NULL,
+            *gtid_gap = NULL, *gtid_mlost = NULL, *gtid_slost = NULL;
+    const char *mode = c->argv[0]->ptr;
+    int request_mode, locate_mode, switch_mode, result;
+
+    /* get paritial sync request offset:
+     *   psync: request offset specified in command
+     *   xsync: offset of continue point
+     */
+    if (!strcasecmp(mode,"psync")) {
+        request_mode = REPL_MODE_PSYNC;
+        if (getLongLongFromObjectOrReply(c,c->argv[2],&psync_offset,NULL)
+                != C_OK) goto need_full_resync;
+    } else if (!strcasecmp(mode,"xsync")) {
+        sds gtid_repr = c->argv[2]->ptr;
+        request_mode = REPL_MODE_XSYNC;
+        gtid_slave = gtidSetDecode(gtid_repr,sdslen(gtid_repr));
+        if (gtid_slave == NULL) goto need_full_resync;
+        for (int i = 3; i+1 < c->argc; i += 2) {
+            if (!strcasecmp(c->argv[i]->ptr,"tolerate")) {
+                if (getLongLongFromObjectOrReply(c,c->argv[i+1],&maxgap,NULL)
+                        != C_OK) {
+                    serverLog(LL_WARNING,
+                            "tolerate option with invalid maxgap: %s",
+                            (sds)c->argv[i+1]->ptr);
+                }
+            } else {
+                serverLog(LL_WARNING, "unknown xsync option ignored: %s",
+                        (sds)c->argv[i]->ptr);
+            }
+        }
+        if (server.gtid_seq == NULL) {
+            serverLog(LL_NOTICE,"Partial xsync request from %s rejected: gtid seq not exist.", replicationGetSlaveName(c));
+            goto need_full_resync;
+        }
+        psync_offset = gtidSeqXsync(server.gtid_seq,gtid_slave,&gtid_xsync);
+        //TODO 不一定就是最后一个，可能是switch mode点？应该调整到上一个xsync mode结束的点
+        if (psync_offset < 0) psync_offset = server.master_repl_offset;
+    } else {
+        request_mode = REPL_MODE_UNSET;
+        goto need_full_resync;
+    }
+
+    /* check if request repl mode valid(switch repl mode if needed). */
+    locate_mode = locateServerReplMode(psync_offset, &switch_mode);
+    if (locate_mode == REPL_MODE_UNSET) goto need_full_resync;
+
+    if (request_mode == locate_mode) {
+        if (request_mode == REPL_MODE_PSYNC) {
+            result = masterTryPartialResynchronization(c);
+        } else {
+            gtid_cont = gtidSetDup(server.gtid_executed);
+            gtidSetMerge(gtid_cont,gtidSetDup(server.gtid_lost));
+            gtidSetDiff(gtid_cont,gtid_xsync);
+
+            gtid_mlost = gtidSetDup(gtid_cont);
+            gtidSetDiff(gtid_mlost,gtid_slave);
+            gtid_slost = gtidSetDup(gtid_slave);
+            gtidSetDiff(gtid_slost,gtid_cont);
+
+            // serverLog(LL_NOTICE, "Master parital xsync with gtid.set: executed=%s,
+            // lost=%s, xsync=%s, cont=%s, mlost=%s, slost=%s");
+
+            gno_t gap = gtidSetCount(gtid_mlost) + gtidSetCount(gtid_slost);
+            if (gap > maxgap) {
+                serverLog(LL_NOTICE, "Partial xsync request from %s rejected: gap=%lld, maxgap=%lld", replicationGetSlaveName(c), gap, maxgap);
+                goto need_full_resync;
+            } else {
+                serverLog(LL_NOTICE, "Partial xsync request from %s accepted: gap=%lld, maxgap=%lld", replicationGetSlaveName(c), gap, maxgap);
+                result = masterSetupPartialXsynchronization(c,psync_offset,gtid_cont);
+            }
+        }
+    } else if (switch_mode) {
+        if (request_mode == REPL_MODE_PSYNC) {
+            if (server.gtid_seq == NULL) {
+                serverLog(LL_NOTICE,"Partial resync request from %s rejected: gtid seq not exist.", replicationGetSlaveName(c));
+                goto need_full_resync;
+            }
+            gtid_cont = gtidSetDup(server.gtid_executed);
+            gtidSetMerge(gtid_cont,gtidSetDup(server.gtid_lost));
+            gtid_xsync = gtidSeqPsync(server.gtid_seq,psync_offset);
+            gtidSetDiff(gtid_cont,gtid_xsync);
+
+            result = masterSetupPartialXsynchronization(c,psync_offset,gtid_cont);
+        } else {
+            result = masterSetupPartialResynchronization(c,psync_offset);
+        }
+    } else {
+        goto need_full_resync;
+    }
+
+    if (gtid_cont) gtidSetFree(gtid_cont);
+    if (gtid_slave) gtidSetFree(gtid_slave);
+    if (gtid_gap) gtidSetFree(gtid_gap);
+    if (gtid_xsync) gtidSetFree(gtid_xsync);
+    return result;
+
+need_full_resync:
+    if (gtid_cont) gtidSetFree(gtid_cont);
+    if (gtid_slave) gtidSetFree(gtid_slave);
+    if (gtid_gap) gtidSetFree(gtid_gap);
+    if (gtid_xsync) gtidSetFree(gtid_xsync);
+    return C_ERR;
 }
 
 /* xpipe use info gtid to collect gtid gap string, but gap can be large
