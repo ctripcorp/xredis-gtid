@@ -481,7 +481,7 @@ int ctrip_addReplyReplicationBacklog(client *c, long long offset,
 
 int masterSetupPartialSynchronization(client *c, long long psync_offset,
         char *buf, int buflen) {
-    int close_slave;
+    int disconect;
     long long psync_len;
 
     /* see masterTryPartialResynchronization for more details. */
@@ -503,12 +503,12 @@ int masterSetupPartialSynchronization(client *c, long long psync_offset,
         return C_ERR;
     }
 
-    close_slave = ctrip_addReplyReplicationBacklog(c,psync_offset,&psync_len);
+    disconect = ctrip_addReplyReplicationBacklog(c,psync_offset,&psync_len);
     serverLog(LL_NOTICE,
         "Sending %lld bytes of backlog starting from offset %lld.",
         psync_len, psync_offset);
 
-    if (close_slave) {
+    if (disconect) {
         //TODO confirm that backlog will be sent and then connection closed
         serverLog(LL_NOTICE, "Closing slave %s to switch repl mode.",
                 replicationGetSlaveName(c));
@@ -670,18 +670,114 @@ need_full_resync:
     return C_ERR;
 }
 
-/* xpipe use info gtid to collect gtid gap string, but gap can be large
-   and info command are often use to collect metric, encode gap into info
-   might cause latency. To keep compatible without affecting metric
-collect: info gtid expose complete gap info, info all & info expose
-gap summary. */
-sds genGtidGapString(sds info) {
-    size_t maxlen = gtidSetEstimatedEncodeBufferSize(server.gtid_executed);
-    char *buf = zcalloc(maxlen);
-    size_t len = gtidSetEncode(buf, maxlen, server.gtid_executed);
-    info = sdscatprintf(info, "all:%.*s\r\n", (int)len, buf);
-    zfree(buf);
-    return info;
+/* NOTE: Must keep following mocros in-sync */
+#define PSYNC_WRITE_ERROR 0
+#define PSYNC_WAIT_REPLY 1
+#define PSYNC_CONTINUE 2
+#define PSYNC_FULLRESYNC 3
+#define PSYNC_NOT_SUPPORTED 4
+#define PSYNC_TRY_LATER 5
+
+char *sendCommand(connection *conn, ...);
+
+int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
+    gtidSet *gtid_slave = NULL;
+    size_t gtidlen;
+    char *gtidrepr = NULL;
+    int result = PSYNC_WAIT_REPLY;
+
+    if (server.repl_mode->mode != REPL_MODE_XSYNC) return -1;
+
+    gtid_slave = gtidSetDup(server.gtid_executed);
+    gtidSetMerge(gtid_slave,server.gtid_lost);//TODO merge no MOVE
+    gtidlen = gtidSetEstimatedEncodeBufferSize(gtid_slave);
+    gtidrepr = zcalloc(gtidlen);
+
+    gtidSetEncode(gtidrepr, gtidlen, server.gtid_executed);
+    sds reply = sendCommand(conn,"XSYNC","*",gtidrepr,NULL);//TODO deal with failover?
+
+    if (reply != NULL) {
+        serverLog(LL_WARNING,"Unable to send XSYNC to master: %s", reply);
+        sdsfree(reply);
+        connSetReadHandler(conn, NULL);
+        result = PSYNC_WRITE_ERROR;
+    }
+
+    gtidSetFree(gtid_slave);
+    zfree(gtidrepr);
+
+    return result;
+}
+
+int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
+    if (server.repl_mode->mode != REPL_MODE_XSYNC) {
+        if (!strncmp(reply,"+XFULLRESYNC",12)) {
+            /* psync => xfullresync */
+        }
+        if (!strncmp(reply,"+XCONTINUE",10)) {
+            /* psync => xcontinue */
+        }
+        /* psync => fullresync, psync => continue, unknown response handled
+         * by origin psync. */
+        return -1;
+    } else {
+        if (!strncmp(reply,"+FULLRESYNC",11)) {
+            /* xsync => fullresync */
+            serverAssert(0);
+            sdsfree(reply);
+            return -1;
+        }
+
+        if (!strncmp(reply,"+CONTINUE",9)) {
+            /* xsync => continue */
+            serverAssert(0);
+            sdsfree(reply);
+            return -1;
+        }
+
+        if (!strncmp(reply,"+XFULLRESYNC",12)) {
+            /* xsync => xfullresync */
+            serverLog(LL_NOTICE,"XFull resync from master: %s.", reply);
+            sdsfree(reply);
+            return PSYNC_FULLRESYNC;
+        }
+
+        if (!strncmp(reply,"+XCONTINUE",10)) {
+            /* xsync => xcontinue */
+            sds *tokens;
+            int i, ntoken;
+            gtidSet *gtid_cont = NULL, *gtid_lost = NULL;
+
+            tokens = sdssplitlen(reply+10, sdslen(reply)-10, " ", 1, &ntoken);
+
+            for (i = 0; i+1 < ntoken; i += 2) {
+                if (strncasecmp(tokens[i], "gtid.set", sdslen(tokens[i]))) {
+                    gtid_cont = gtidSetDecode(tokens[i+1],sdslen(tokens[i+1]));
+                    gtid_lost = gtidSetDup(gtid_cont);
+                    gtidSetDiff(gtid_lost, server.gtid_executed);
+                    gtidSetDiff(gtid_lost, server.gtid_lost);
+                    // serverLog(LL_NOTICE, "xcontinue with gtid info:"
+                    // "server.gtid_executed=%s, server.gtid_lost=%s, gtid.set=%s => gtid.lost=%s",);
+                    gtidSetMerge(server.gtid_lost, gtid_lost);
+                    // serverLog(LL_NOTICE, "server.gtid_lost updated to %s," );
+                } else if (strncasecmp(tokens[i], "master.sid",
+                            sdslen(tokens[i]))) {
+                    /* ignored */
+                } else {
+                    serverLog(LL_WARNING,
+                            "ignored unknown xcontinue option: %s", tokens[i]);
+                }
+            }
+
+            sdsfree(reply);
+            replicationCreateMasterClient(conn,-1);
+            if (server.repl_backlog == NULL) ctrip_createReplicationBacklog();
+            serverLog(LL_NOTICE, "Successful xsync with master: %s.", reply);
+            return PSYNC_CONTINUE;
+        }
+        /* unknown response handled by origin psync. */
+        return -1;
+    }
 }
 
 sds genGtidStatString(sds info) {
