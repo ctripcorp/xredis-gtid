@@ -166,6 +166,8 @@ gtidSeq *gtidSeqCreate();
 void gtidSeqDestroy(gtidSeq *seq);
 void gtidSeqAppend(gtidSeq *seq, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
 void gtidSeqTrim(gtidSeq *seq, long long until);
+size_t gtidSeqEstimatedEncodeBufferSize(gtidSeq* seq);
+ssize_t gtidSeqEncode(char *buf, size_t maxlen, gtidSeq* seq);
 long long gtidSeqXsync(gtidSeq *seq, gtidSet *req, gtidSet **pcont);
 gtidSet *gtidSeqPsync(gtidSeq *seq, long long offset);
 void gtidSeqGetStat(gtidSeq *seq, gtidSeqStat *stat);

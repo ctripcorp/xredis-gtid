@@ -1017,6 +1017,51 @@ void gtidSeqTrim(gtidSeq *seq, long long until) {
     }
 }
 
+/* <uuid>:[<gno_1>=<offset_1>,<gno_2>=<offset_2>,...] */
+static inline size_t gtidSegmentEstimatedEncodeBufferSize(gtidSegment *seg) {
+    size_t len = 0;
+    len += seg->uuid_len + 1; /* uuid: */
+    len += 2; /* [] */
+    len += (seg->ngno-seg->tgno)*(20+1+20+1); /* <gno_i>=<offset_i>, */
+    return len;
+}
+
+static inline size_t gtidSegmentEncode(char *buf, size_t maxlen, gtidSegment *seg) {
+    size_t len = 0;
+    len += snprintf(buf+len,maxlen-len,"%.*s:[",(int)seg->uuid_len,seg->uuid);
+    for (size_t i = seg->tgno; i < seg->ngno; i++) {
+        len += snprintf(buf+len,maxlen-len,"%llu=%llu,",
+                seg->base_gno+i,seg->base_offset+seg->deltas[i]);
+    }
+    len += snprintf(buf+len,maxlen-len,"]");
+    return len;
+}
+
+size_t gtidSeqEstimatedEncodeBufferSize(gtidSeq* seq) {
+    size_t len = 0;
+    if (seq->firstseg) {
+        len += gtidSegmentEstimatedEncodeBufferSize(seq->firstseg);
+    }
+    if (seq->lastseg != seq->firstseg) {
+        len += 5; /* ;...; */
+        len += gtidSegmentEstimatedEncodeBufferSize(seq->lastseg);
+    }
+    return len;
+}
+
+/* <first_seg>;...;<last_seg>*/
+ssize_t gtidSeqEncode(char *buf, size_t maxlen, gtidSeq* seq) {
+    size_t len = 0;
+    if (seq->firstseg) {
+        len += gtidSegmentEncode(buf+len,maxlen-len,seq->firstseg);
+    }
+    if (seq->lastseg != seq->firstseg) {
+        len += snprintf(buf+len,maxlen-len,";...;");
+        len +=gtidSegmentEncode(buf+len,maxlen-len,seq->lastseg);
+    }
+    return len;
+}
+
 /* Locate xsync continue position, return continue offset and gitset from
  * continue to end. */
 long long gtidSeqXsync(gtidSeq *seq, gtidSet *req, gtidSet **pcont) {

@@ -1,5 +1,5 @@
 STD=-std=c99
-OPT=-O2
+OPT=-O0
 
 ifdef SANITIZER
 ifeq ($(SANITIZER),address)
