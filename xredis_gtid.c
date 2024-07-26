@@ -616,7 +616,9 @@ int ctrip_masterTryPartialResynchronization(client *c) {
             }
         }
         if (server.gtid_seq == NULL) {
-            serverLog(LL_NOTICE,"Partial xsync request from %s rejected: gtid seq not exist.", replicationGetSlaveName(c));
+            serverLog(LL_NOTICE,
+                    "Partial xsync request from %s rejected: gtid seq not exist.",
+                    replicationGetSlaveName(c));
             goto need_full_resync;
         }
         psync_offset = gtidSeqXsync(server.gtid_seq,gtid_slave,&gtid_xsync);
@@ -689,7 +691,7 @@ need_full_resync:
     return C_ERR;
 }
 
-/* NOTE: Must keep following mocros in-sync */
+/* NOTE: Must keep following macros in-sync */
 #define PSYNC_WRITE_ERROR 0
 #define PSYNC_WAIT_REPLY 1
 #define PSYNC_CONTINUE 2
@@ -704,16 +706,22 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
     size_t gtidlen;
     char *gtidrepr = NULL;
     int result = PSYNC_WAIT_REPLY;
+    char max_gap[32];
 
     if (server.repl_mode->mode != REPL_MODE_XSYNC) return -1;
+
+    snprintf(max_gap,sizeof(max_gap),"%lld",server.gtid_xsync_max_gap);
 
     gtid_slave = gtidSetDup(server.gtid_executed);
     gtidSetMerge(gtid_slave,server.gtid_lost);//TODO merge no MOVE
     gtidlen = gtidSetEstimatedEncodeBufferSize(gtid_slave);
     gtidrepr = zcalloc(gtidlen);
-
     gtidSetEncode(gtidrepr, gtidlen, server.gtid_executed);
-    sds reply = sendCommand(conn,"XSYNC","*",gtidrepr,NULL);//TODO deal with failover?
+
+    serverLog(LL_NOTICE,"Trying a partial xsync(gtid.set=%s, tolerate=%s)",
+            gtidrepr, max_gap);
+
+    sds reply = sendCommand(conn,"XSYNC","*",gtidrepr,"TOLERATE",max_gap,NULL);
 
     if (reply != NULL) {
         serverLog(LL_WARNING,"Unable to send XSYNC to master: %s", reply);
@@ -731,44 +739,48 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
 int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
     if (server.repl_mode->mode != REPL_MODE_XSYNC) {
         if (!strncmp(reply,"+XFULLRESYNC",12)) {
-            /* psync => xfullresync */
+            /* TODO PSYNC => XFULLRESYNC */
+            serverPanic("not implemented");
         }
         if (!strncmp(reply,"+XCONTINUE",10)) {
-            /* psync => xcontinue */
+            /* TODO PSYNC => XCONTINUE */
+            serverPanic("not implemented");
         }
         /* psync => fullresync, psync => continue, unknown response handled
          * by origin psync. */
         return -1;
     } else {
         if (!strncmp(reply,"+FULLRESYNC",11)) {
-            /* xsync => fullresync */
-            serverAssert(0);
+            /* TODO: XSYNC => FULLRESYNC */
+            serverPanic("not implemented");
             sdsfree(reply);
             return -1;
         }
 
         if (!strncmp(reply,"+CONTINUE",9)) {
-            /* xsync => continue */
-            serverAssert(0);
+            /* TODO XSYNC => CONTINUE */
+            serverPanic("not implemented");
             sdsfree(reply);
             return -1;
         }
 
         if (!strncmp(reply,"+XFULLRESYNC",12)) {
-            /* xsync => xfullresync */
+            /* XSYNC => XFULLRESYNC */
             serverLog(LL_NOTICE,"XFull resync from master: %s.", reply);
+            replicationDiscardCachedMaster();
             sdsfree(reply);
             return PSYNC_FULLRESYNC;
         }
 
         if (!strncmp(reply,"+XCONTINUE",10)) {
-            /* xsync => xcontinue */
+            /* XSYNC => XCONTINUE */
             sds *tokens;
             int i, ntoken;
             gtidSet *gtid_cont = NULL, *gtid_lost = NULL;
 
-            tokens = sdssplitlen(reply+10, sdslen(reply)-10, " ", 1, &ntoken);
+            serverLog(LL_NOTICE, "Successful partial xsync with master: %s.", reply);
 
+            tokens = sdssplitlen(reply+10, sdslen(reply)-10, " ", 1, &ntoken);
             for (i = 0; i+1 < ntoken; i += 2) {
                 if (strncasecmp(tokens[i], "gtid.set", sdslen(tokens[i]))) {
                     gtid_cont = gtidSetDecode(tokens[i+1],sdslen(tokens[i+1]));
@@ -787,13 +799,15 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                             "ignored unknown xcontinue option: %s", tokens[i]);
                 }
             }
-
             sdsfree(reply);
+            sdsfreesplitres(tokens,ntoken);
+
             replicationCreateMasterClient(conn,-1);
             if (server.repl_backlog == NULL) ctrip_createReplicationBacklog();
-            serverLog(LL_NOTICE, "Successful xsync with master: %s.", reply);
+
             return PSYNC_CONTINUE;
         }
+
         /* unknown response handled by origin psync. */
         return -1;
     }
