@@ -1277,6 +1277,7 @@ int test_gtidSetAppendGtidSet() {
     assert(str_len == strlen("B:1:3:5:7"));
     assert(strncmp(gtid_str, "B:1:3:5:7",str_len) == 0);
     gtidSetFree(A);
+    gtidSetFree(B);
 
     //(B:1:3:5:7) + null = (B:1:3:5:7)
     A_str = "B:1:3:5:7";
@@ -1288,6 +1289,7 @@ int test_gtidSetAppendGtidSet() {
     assert(str_len == strlen("B:1:3:5:7"));
     assert(strncmp(gtid_str, "B:1:3:5:7",str_len) == 0);
     gtidSetFree(A);
+    gtidSetFree(B);
 
     //(A:1:3:5:7) + (B:1:3:5:7) = (A:1:3:5:7,B:1:3:5:7)
     A_str = "A:1:3:5:7";
@@ -1298,10 +1300,8 @@ int test_gtidSetAppendGtidSet() {
     str_len = gtidSetEncode(gtid_str, maxlen, A);
     assert(str_len == strlen("A:1:3:5:7,B:1:3:5:7"));
     assert(strncmp(gtid_str, "A:1:3:5:7,B:1:3:5:7",str_len) == 0);
-    /* str_len = gtidSetEncode(gtid_str, maxlen, B); */
-    /* assert(str_len == strlen("B:1:3:5:7")); */
-    /* assert(strncmp(gtid_str, "B:1:3:5:7",str_len) == 0); */
     gtidSetFree(A);
+    gtidSetFree(B);
 
 
     //(A:1:3:5:7) + (B:1:3:5:7,C:1:3:5:7) = (A:1:3:5:7,B:1:3:5:7,C:1:3:5:7)
@@ -1310,11 +1310,11 @@ int test_gtidSetAppendGtidSet() {
     B_str = "B:1:3:5:7,C:1:3:5:7";
     B = gtidSetDecode(B_str, strlen(B_str));
     gtidSetMerge(A, B);
-
     str_len = gtidSetEncode(gtid_str, maxlen, A);
     assert(str_len == strlen("A:1:3:5:7,B:1:3:5:7,C:1:3:5:7"));
     assert(strncmp(gtid_str, "A:1:3:5:7,B:1:3:5:7,C:1:3:5:7",str_len) == 0);
     gtidSetFree(A);
+    gtidSetFree(B);
 
     //(A:1:3:5:7) + (A:2:4:6:8) = (A:1-8)
     A_str = "A:1:3:5:7";
@@ -1326,6 +1326,7 @@ int test_gtidSetAppendGtidSet() {
     assert(str_len == strlen("A:1-8"));
     assert(strncmp(gtid_str, "A:1-8",str_len) == 0);
     gtidSetFree(A);
+    gtidSetFree(B);
 
     return 1;
 }
