@@ -1074,10 +1074,13 @@ int test_gtidSetDecode() {
     size_t maxlen = 100;
     char gtid_str[maxlen];
     int len = gtidSetEncode(gtid_str, maxlen, gtid_set);
-    //encode & decode A:1-7,B:9:11-13:20 string len equal
     assert(len == strlen(gtid_set_str) - 3);
+    assert(memcmp(gtid_set_str,gtid_str,len) == 0);
     gtidSetFree(gtid_set);
 
+    gtid_set_str = "foo bar";
+    gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
+    assert(gtid_set == NULL);
     return 1;
 }
 
@@ -1339,12 +1342,10 @@ int test_gtidSetInvalidArg() {
     gtidSetFree(gtid_set);
 
     gtid_set = gtidSetDecode(",",1);
-    assert(gtid_set != NULL && gtid_set->header == NULL);
-    gtidSetFree(gtid_set);
+    assert(gtid_set == NULL);
 
     gtid_set = gtidSetDecode("foobar",1);
-    assert(gtid_set != NULL && gtid_set->header == NULL);
-    gtidSetFree(gtid_set);
+    assert(gtid_set == NULL);
 
     gtid_set = gtidSetDecode("A:0",3);
     assert(gtid_set != NULL && gtid_set->header != NULL);

@@ -652,21 +652,28 @@ gno_t gtidSetAppend(gtidSet *gtid_set, uuidSet *uuid_set) {
 }
 
 gtidSet *gtidSetDecode(char* src, size_t len) {
+    uuidSet *uuid_set;
     gtidSet* gtid_set = gtidSetNew();
     const char *split = ",";
     int uuid_str_start_index = 0;
+    if (len == 0) return gtid_set;
     for(int i = 0; i < len; i++) {
         if(src[i] == split[0]) {
-            uuidSet *uuid_set = uuidSetDecode(src+uuid_str_start_index,
+            uuid_set = uuidSetDecode(src+uuid_str_start_index,
                     i-uuid_str_start_index);
+            if (uuid_set == NULL) goto err;
             gtidSetAppend(gtid_set, uuid_set);
             uuid_str_start_index = (i + 1);
         }
     }
-    uuidSet *uuid_set = uuidSetDecode(src+uuid_str_start_index,
+    uuid_set = uuidSetDecode(src+uuid_str_start_index,
             len-uuid_str_start_index);
+    if (uuid_set == NULL) goto err;
     gtidSetAppend(gtid_set, uuid_set);
     return gtid_set;
+err:
+    gtidSetFree(gtid_set);
+    return NULL;
 }
 
 size_t gtidSetEstimatedEncodeBufferSize(gtidSet* gtid_set) {
