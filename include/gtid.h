@@ -34,7 +34,8 @@
 #include <sys/types.h>
 
  /* gno start from 1 */
-#define GNO_INITIAL 1
+#define GTID_GNO_INITIAL        1
+#define GTID_ENCODE_SKIP_EMPTY  (1<<0)
 
 typedef long long gno_t;
 
@@ -101,7 +102,8 @@ gtidSet* gtidSetNew();
 void gtidSetFree(gtidSet* gtid_set);
 gtidSet* gtidSetDup(gtidSet *gtid_set);
 gtidSet *gtidSetDecode(char* repr, size_t len);
-ssize_t gtidSetEncode(char *buf, size_t maxlen, gtidSet* gtid_set);
+ssize_t gtidSetEncodeWithFlags(char *buf, size_t maxlen, gtidSet* gtid_set, int flags);
+#define gtidSetEncode(buf, maxlen, gtid_set) gtidSetEncodeWithFlags(buf, maxlen, gtid_set, GTID_ENCODE_SKIP_EMPTY)
 gno_t gtidSetAddRange(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t start, gno_t end);
 #define gtidSetAdd(gtid_set, uuid, uuid_len, gno) gtidSetAddRange(gtid_set, uuid, uuid_len, gno, gno)
 gno_t gtidSetRaise(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);

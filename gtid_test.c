@@ -28,9 +28,9 @@ void uuidDup(char **pdup, size_t *pdup_len, const char* uuid, int uuid_len);
 
 int test_gtidIntervalNew() {
     int level = 4, i;
-    gtidIntervalNode* interval = gtidIntervalNodeNew(level,GNO_INITIAL,GNO_INITIAL);
-    assert(interval->start == GNO_INITIAL);
-    assert(interval->end == GNO_INITIAL);
+    gtidIntervalNode* interval = gtidIntervalNodeNew(level,GTID_GNO_INITIAL,GTID_GNO_INITIAL);
+    assert(interval->start == GTID_GNO_INITIAL);
+    assert(interval->end == GTID_GNO_INITIAL);
     for (i = 0; i < level; i++) assert(interval->forwards[i] == NULL);
     gtidIntervalNodeFree(interval);
 
@@ -122,6 +122,11 @@ int test_uuidSetDecode() {
     assert(node->forwards[0]->end == 9);
     assert(node->forwards[0]->forwards[0] == NULL);
     uuidSetFree(uuid_set);
+
+    uuid_set = uuidSetDecode("A",1);
+    assert(uuid_set && uuidSetCount(uuid_set) == 0);
+    uuidSetFree(uuid_set);
+
     return 1;
 }
 
@@ -189,22 +194,17 @@ int test_uuidSetEncode() {
 int test_uuidSetInvalidArg() {
     uuidSet *uuid_set;
     assert(uuidSetDecode("",0) == NULL);
-    assert(uuidSetDecode("foobar",6) == NULL);
-
-    uuid_set = uuidSetDecode("A:2-1",5);
+    uuid_set = uuidSetDecode("foobar",6);
     assert(uuidSetCount(uuid_set) == 0);
     uuidSetFree(uuid_set);
 
-    uuid_set = uuidSetDecode("A:foobar",8);
-    assert(uuidSetCount(uuid_set) == 0);
-    uuidSetFree(uuid_set);
-
-    uuid_set = uuidSetDecode("A:foobar",8);
-    uuidSetFree(uuid_set);
     uuid_set = uuidSetDecode("A:2-1",5);
-    uuidSetFree(uuid_set);
+    assert(uuid_set == NULL);
 
-    uuid_set = uuidSetDecode("A:3-10",5);
+    uuid_set = uuidSetDecode("A:foobar",8);
+    assert(uuid_set == NULL);
+
+    uuid_set = uuidSetDecode("A:3-10",6);
     assert(uuidSetContains(uuid_set,0) == 0);
     assert(uuidSetAdd(uuid_set,0,0) == 0);
     assert(uuidSetAdd(uuid_set,2,1) == 0);
@@ -220,10 +220,9 @@ int test_uuidSetAddInterval() {
     char buf[maxlen];
     size_t buf_len;
     uuidSet* uuid_set;
-    gno_t start, end;
 
-    //(0) + (1-2) = (1-2)
-    decode_str = "A:0";
+    //() + (1-2) = (1-2)
+    decode_str = "A";
     uuid_set = uuidSetDecode(decode_str, strlen(decode_str));
     assert(uuidSetAdd(uuid_set, 1, 2) == 2);
     buf_len = uuidSetEncode(buf, maxlen, uuid_set);
@@ -1080,7 +1079,26 @@ int test_gtidSetDecode() {
 
     gtid_set_str = "foo bar";
     gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
-    assert(gtid_set == NULL);
+    assert(gtidSetCount(gtid_set) == 0);
+    gtidSetFree(gtid_set);
+
+    gtid_set_str = "";
+    gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
+    assert(gtid_set && gtidSetCount(gtid_set) == 0);
+    gtidSetFree(gtid_set);
+
+    uuidSet *uuid_set;
+    gtid_set_str = "A:,B:2,C:";
+    gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
+    assert(gtid_set);
+    uuid_set = gtidSetFind(gtid_set,"A",1);
+    assert(uuid_set && uuidSetCount(uuid_set) == 0);
+    uuid_set = gtidSetFind(gtid_set,"B",1);
+    assert(uuid_set && uuidSetCount(uuid_set) == 1);
+    uuid_set = gtidSetFind(gtid_set,"C",1);
+    assert(uuid_set && uuidSetCount(uuid_set) == 0);
+    gtidSetFree(gtid_set);
+
     return 1;
 }
 
@@ -1238,11 +1256,11 @@ int test_gtidSetRaise() {
     gtidSetAdd(gtid_set, "A", 1, 0);
     len = gtidSetEncode(gtid_str, maxlen, gtid_set);
     gtid_str[len] = '\0';
-    assert(strcmp(gtid_str, "A:0") == 0);
+    assert(strcmp(gtid_str, "") == 0);
     gtidSetRaise(gtid_set, "A", 1, 0);
     len = gtidSetEncode(gtid_str, maxlen, gtid_set);
     gtid_str[len] = '\0';
-    assert(strcmp(gtid_str, "A:0") == 0);
+    assert(strcmp(gtid_str, "") == 0);
     gtidSetFree(gtid_set);
 
     return 1;
@@ -1345,17 +1363,14 @@ int test_gtidSetInvalidArg() {
     assert(gtid_set == NULL);
 
     gtid_set = gtidSetDecode("foobar",1);
-    assert(gtid_set == NULL);
+    assert(gtidSetCount(gtid_set) == 0);
+    gtidSetFree(gtid_set);
 
     gtid_set = gtidSetDecode("A:0",3);
-    assert(gtid_set != NULL && gtid_set->header != NULL);
-    assert(uuidSetCount(gtid_set->header) == 0);
-    gtidSetFree(gtid_set);
+    assert(gtid_set == NULL);
 
     gtid_set = gtidSetDecode("A:2-1",5);
-    assert(gtid_set != NULL && gtid_set->header != NULL);
-    assert(uuidSetCount(gtid_set->header) == 0);
-    gtidSetFree(gtid_set);
+    assert(gtid_set == NULL);
 
     gtid_set = gtidSetDecode("A:3-5",5);
 
