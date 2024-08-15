@@ -1621,6 +1621,79 @@ int test_gtidSeqXsync() {
     return 1;
 }
 
+int test_gtidSeqPsync() {
+    char buf[64];
+    size_t len;
+    gtidSet *gtid_set;
+    gtidSeq *seq = gtidSeqCreate();
+
+    gtidSeqAppend(seq,"A",1,100,100000);
+    gtidSeqAppend(seq,"A",1,101,100100);
+
+    gtidSeqAppend(seq,"B",1,100,200000);
+
+    gtidSeqAppend(seq,"B",1,101,300100);
+    gtidSeqAppend(seq,"B",1,102,300200);
+    gtidSeqAppend(seq,"B",1,103,300300);
+
+    gtid_set = gtidSeqPsync(seq,400000);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 0 && !strncmp(buf,"",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,300300);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 5 && !strncmp(buf,"B:103",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,300250);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 5 && !strncmp(buf,"B:103",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,300200);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 9 && !strncmp(buf,"B:102-103",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,300150);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 9 && !strncmp(buf,"B:102-103",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,300100);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 9 && !strncmp(buf,"B:101-103",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,300050);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 9 && !strncmp(buf,"B:101-103",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,200000);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 9 && !strncmp(buf,"B:100-103",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,100100);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 15 && !strncmp(buf,"B:100-103,A:101",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,100000);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 19 && !strncmp(buf,"B:100-103,A:100-101",len));
+    gtidSetFree(gtid_set);
+
+    gtid_set = gtidSeqPsync(seq,90000);
+    len = gtidSetEncode(buf,sizeof(buf),gtid_set);
+    assert(len == 19 && !strncmp(buf,"B:100-103,A:100-101",len));
+    gtidSetFree(gtid_set);
+
+    return 1;
+}
+
 int test_api(void) {
     {
         test_cond("gtidIntervalNew function",
@@ -1701,6 +1774,8 @@ int test_api(void) {
             test_gtidSeqTrim() == 1);
         test_cond("gtidSeqXsync function",
             test_gtidSeqXsync() == 1);
+        test_cond("gtidSeqPsync function",
+            test_gtidSeqPsync() == 1);
 
     } test_report()
     return 1;

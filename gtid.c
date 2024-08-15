@@ -1109,7 +1109,38 @@ long long gtidSeqXsync(gtidSeq *seq, gtidSet *req, gtidSet **pcont) {
 }
 
 gtidSet *gtidSeqPsync(gtidSeq *seq, long long offset) {
-    return NULL;
+    gtidSegment *seg = seq->lastseg;
+    gtidSet *gtid_set = gtidSetNew();
+
+    while (seg) {
+        gno_t start_gno, end_gno;
+        long long start_offset = seg->base_offset + seg->deltas[seg->tgno];
+
+        if (start_offset >= offset) {
+            start_gno = seg->base_gno + seg->tgno;
+            end_gno = seg->base_gno + seg->ngno - 1; /* inclusive */
+            gtidSetAddRange(gtid_set,seg->uuid,seg->uuid_len,start_gno,end_gno);
+            seg = seg->prev;
+        } else {
+            long long moffset;
+            size_t l = seg->tgno, r = seg->ngno, m;
+            while (l < r) {
+                m = (l + r)/2;
+                moffset = seg->base_offset + seg->deltas[m];
+                if (moffset < offset) {
+                    l = m+1;
+                } else {
+                    r = m;
+                }
+            }
+            start_gno = seg->base_gno + l;
+            end_gno = seg->base_gno + seg->ngno - 1; /* inclusive */
+            gtidSetAddRange(gtid_set,seg->uuid,seg->uuid_len,start_gno,end_gno);
+            seg = NULL;
+        }
+    }
+
+    return gtid_set;
 }
 
 void gtidSeqGetStat(gtidSeq *seq, gtidSeqStat *stat) {
