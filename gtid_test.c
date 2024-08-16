@@ -25,6 +25,8 @@ void gtidIntervalNodeFree(gtidIntervalNode* interval);
 ssize_t gtidIntervalEncode(char *buf, size_t maxlen, gno_t start, gno_t end);
 int gtidIntervalDecode(char* interval_str, size_t len, gno_t *pstart, gno_t *pend);
 void uuidDup(char **pdup, size_t *pdup_len, const char* uuid, int uuid_len);
+uuidSet* gtidSetFind(gtidSet* gtid_set, const char* uuid, size_t uuid_len);
+gno_t gtidSetAppend(gtidSet *gtid_set, uuidSet *uuid_set);
 
 int test_gtidIntervalNew() {
     int level = 4, i;
@@ -208,7 +210,6 @@ int test_uuidSetInvalidArg() {
     assert(uuidSetContains(uuid_set,0) == 0);
     assert(uuidSetAdd(uuid_set,0,0) == 0);
     assert(uuidSetAdd(uuid_set,2,1) == 0);
-    assert(uuidSetRaise(uuid_set,0) == 0);
     uuidSetFree(uuid_set);
 
     return 1;
@@ -658,67 +659,6 @@ int test_uuidSetAddChaos() {
     return 1;
 }
 
-int test_uuidSetRaise() {
-    size_t maxlen = 100, len;
-    char buf[maxlen];
-    uuidSet* uuid_set;
-    gtidIntervalNode *node;
-    char* uuidset_str;
-
-    uuid_set = uuidSetNew("A", 1);
-    uuidSetAdd(uuid_set, 5, 5);
-    uuidSetRaise(uuid_set, 1);
-    len = uuidSetEncode(buf, maxlen, uuid_set);
-    assert(len == 5); //A:1:5
-    assert(strncmp(buf, "A:1:5", len) == 0);
-    uuidSetFree(uuid_set);
-
-    uuid_set = uuidSetNew("A", 1);
-    uuidSetAdd(uuid_set, 5, 5);
-    uuidSetRaise(uuid_set, 6);
-    node = uuid_set->intervals->header->forwards[0];
-    assert(node->start == 1 );
-    assert(node->end == 6);
-    assert(node->forwards[0] == NULL);
-    assert(memcmp(uuid_set->uuid, "A\0", 2) == 0);
-    uuidSetFree(uuid_set);
-
-    uuid_set = uuidSetNew("A", 1);
-    uuidSetAdd(uuid_set, 5, 5);
-    uuidSetAdd(uuid_set, 7, 7);
-    uuidSetRaise(uuid_set, 6);
-    node = uuid_set->intervals->header->forwards[0];
-    assert(node->start == 1);
-    assert(node->end == 7);
-    assert(node->forwards[0] == NULL);
-    assert(memcmp(uuid_set->uuid, "A\0", 2) == 0);
-    uuidSetFree(uuid_set);
-
-    uuid_set = uuidSetNew("A", 1);
-    uuidSetAdd(uuid_set, 5, 5);
-    uuidSetRaise(uuid_set, 3);
-    node = uuid_set->intervals->header->forwards[0];
-    assert(node->start == 1);
-    assert(node->end == 3);
-    assert(node->forwards[0]->start == 5);
-    assert(node->forwards[0]->end == 5);
-    assert(node->forwards[0]->forwards[0] == NULL);
-    assert(memcmp(uuid_set->uuid, "A\0", 2) == 0);
-    uuidSetFree(uuid_set);
-
-    uuidset_str = "A:1:3:5-6:11-14:19-20";
-    uuid_set = uuidSetDecode(uuidset_str, strlen(uuidset_str));
-    uuidSetRaise(uuid_set, 30);
-    node = uuid_set->intervals->header->forwards[0];
-    assert(node->start == 1);
-    assert(node->end == 30);
-    assert(node->forwards[0] == NULL);
-    assert(memcmp(uuid_set->uuid, "A\0", 2) == 0);
-
-    uuidSetFree(uuid_set);
-    return 1;
-}
-
 int test_uuidSetRemove() {
     uuidSet *uuid_set = uuidSetNew("A",1);
     assert(uuidSetRemove(uuid_set,0,1) == 0);
@@ -856,7 +796,7 @@ int test_uuidSetContains() {
     uuid_set = uuidSetNew("A",1);
     uuidSetAdd(uuid_set, 5, 5);
     uuidSetAdd(uuid_set, 8, 8);
-    uuidSetRaise(uuid_set, 6);
+    uuidSetAdd(uuid_set, 1, 6);
     node = uuid_set->intervals->header->forwards[0];
     assert(node->start == 1);
     assert(node->end == 6);
@@ -925,7 +865,7 @@ int test_uuidSetNextEncode() {
     len = uuidSetNextEncode(buf, maxlen, uuid_set, 1);
     assert(3 == len);
     assert(strncmp(buf, "A:6", len) == 0);
-    uuidSetRaise(uuid_set, 8);
+    uuidSetAdd(uuid_set, 1, 8);
     len = uuidSetNextEncode(buf, maxlen, uuid_set, 1);
     assert(3 == len);
     assert(strncmp(buf, "A:9", len) == 0);
@@ -973,50 +913,6 @@ int test_uuidSetNextEncode() {
 
 #define GTID_INTERVAL_MEMORY (sizeof(gtidIntervalNode) + sizeof(gtidIntervalNode*))
 
-int test_uuidSetPurge() {
-    char *repr;
-    uuidSet *uuid_set;
-    uuidSetPurged purged;
-
-    uuid_set = uuidSetNew("A",1);
-    uuidSetPurge(uuid_set,0,&purged);
-    assert(purged.node_count == 0 && purged.end == 0);
-
-    uuidSetAdd(uuid_set, 3, 5);
-    uuidSetPurge(uuid_set,0,&purged);
-    assert(purged.node_count == 0 && purged.end == 0);
-    assert(uuidSetCount(uuid_set) == 3);
-
-    uuidSetFree(uuid_set);
-
-    repr = "A:1:3:5:7:9:11:13:15:17:19";
-    uuid_set = uuidSetDecode(repr, strlen(repr));
-
-    uuidSetPurge(uuid_set, 20*GTID_INTERVAL_MEMORY, &purged);
-    assert(purged.node_count == 0 && purged.end == 0);
-    assert(uuidSetCount(uuid_set) == 10);
-
-    uuidSetPurge(uuid_set, 10*GTID_INTERVAL_MEMORY, &purged);
-    assert(purged.node_count == 0 && purged.end == 0);
-    assert(uuidSetCount(uuid_set) == 10);
-
-    uuidSetPurge(uuid_set, 5*GTID_INTERVAL_MEMORY, &purged);
-    assert(purged.node_count == 5 && purged.end == 11);
-    assert(uuidSetCount(uuid_set) == 15);
-
-    uuidSetPurge(uuid_set, 5*GTID_INTERVAL_MEMORY, &purged);
-    assert(purged.node_count == 0 && purged.end == 0);
-    assert(uuidSetCount(uuid_set) == 15);
-
-    uuidSetPurge(uuid_set, 0, &purged);
-    assert(purged.node_count == 4 && purged.end == 19);
-    assert(uuidSetCount(uuid_set) == 19);
-
-    uuidSetFree(uuid_set);
-
-    return 1;
-}
-
 int test_gtidSetNew() {
     gtidSet* gtid_set = gtidSetNew();
     assert(gtid_set->header == NULL);
@@ -1034,20 +930,20 @@ int test_gtidSetDup() {
     assert(dup->header == NULL && dup->tail == NULL);
     gtidSetFree(dup);
 
-    gtidSetAdd(gtid_set,"A",1,10);
+    gtidSetAdd(gtid_set,"A",1,10,10);
     dup = gtidSetDup(gtid_set);
     len = gtidSetEncode(buf,sizeof(buf),dup);
     assert(!strncmp(buf,"A:10",len));
     gtidSetFree(dup);
 
-    gtidSetAdd(gtid_set,"B",1,10);
+    gtidSetAdd(gtid_set,"B",1,10,10);
     dup = gtidSetDup(gtid_set);
     len = gtidSetEncode(buf,sizeof(buf),dup);
     assert(!strncmp(buf,"A:10,B:10",len));
     gtidSetFree(dup);
 
-    gtidSetAdd(gtid_set,"A",1,20);
-    gtidSetAdd(gtid_set,"B",1,20);
+    gtidSetAdd(gtid_set,"A",1,20,20);
+    gtidSetAdd(gtid_set,"B",1,20,20);
     dup = gtidSetDup(gtid_set);
     len = gtidSetEncode(buf,sizeof(buf),dup);
     assert(!strncmp(buf,"A:10:20,B:10:20",len));
@@ -1137,11 +1033,11 @@ int test_gtidSetEncode() {
     //empty encode len == 0
     assert(len == 0);
 
-    gtidSetAdd(gtid_set, "A", 1, 1);
+    gtidSetAdd(gtid_set, "A", 1, 1, 1);
     len = gtidSetEncode(gtid_str, maxlen, gtid_set);
     assert(len == 3);
     assert(strncmp(gtid_str, "A:1", len) == 0);
-    gtidSetAdd(gtid_set, "B", 1, 1);
+    gtidSetAdd(gtid_set, "B", 1, 1, 1);
     len = gtidSetEncode(gtid_str, maxlen, gtid_set);
     assert(len == 7);
     assert(strncmp(gtid_str, "A:1,B:1", len) == 0);
@@ -1176,24 +1072,24 @@ int test_gtidSetFind() {
 
 int test_gtidSetAdd() {
     gtidSet* gtid_set = gtidSetNew();
-    gtidSetAdd(gtid_set, "A", 1, 1);
+    gtidSetAdd(gtid_set, "A", 1, 1, 1);
     assert(strcmp(gtid_set->header->uuid, "A") == 0);
     assert(gtid_set->header->intervals->header->forwards[0]->start == 1);
     assert(gtid_set->header->intervals->header->forwards[0]->end == 1);
-    gtidSetAdd(gtid_set, "A", 1, 2);
+    gtidSetAdd(gtid_set, "A", 1, 2, 2);
     assert(gtid_set->header->intervals->header->forwards[0]->start == 1);
     assert(gtid_set->header->intervals->header->forwards[0]->end == 2);
 
-    gtidSetAdd(gtid_set, "B", 1, 1);
+    gtidSetAdd(gtid_set, "B", 1, 1, 1);
     assert(strcmp(gtid_set->header->next->uuid, "B") == 0);
     assert(gtid_set->header->next->intervals->header->forwards[0]->start == 1);
     assert(gtid_set->header->next->intervals->header->forwards[0]->end == 1);
     gtidSetFree(gtid_set);
 
     gtid_set = gtidSetNew();
-    gtidSetAdd(gtid_set, "A", 1, 1);
-    gtidSetAdd(gtid_set, "A", 1, 2);
-    gtidSetAdd(gtid_set, "B", 1, 3);
+    gtidSetAdd(gtid_set, "A", 1, 1, 1);
+    gtidSetAdd(gtid_set, "A", 1, 2, 2);
+    gtidSetAdd(gtid_set, "B", 1, 3, 3);
     //Add A:1 A:2 B:3 to empty gtid set
     assert(memcmp(gtid_set->header->uuid, "A\0", 1) == 0);
     assert(gtid_set->header->intervals->header->forwards[0]->start == 1);
@@ -1220,49 +1116,6 @@ int test_uuidGnoDecode() {
     assert(uuid_index == 4);
     assert(strncmp(uuid, "ABCD", uuid_index) == 0);
     assert(gno == 1);
-    return 1;
-}
-
-int test_gtidSetRaise() {
-    char* gtid_set_str = "A:1:3:5:7";
-    gtidSet* gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
-    gtidSetRaise(gtid_set, "A", 1, 10);
-    assert(gtid_set->header->intervals->header->forwards[0]->start == 1);
-    assert(gtid_set->header->intervals->header->forwards[0]->end == 10);
-    gtidSetFree(gtid_set);
-    gtid_set = gtidSetNew();
-    gtidSetRaise(gtid_set, "A", 1, 1);
-    assert(strcmp(gtid_set->header->uuid, "A") == 0);
-    assert(gtid_set->header->intervals->header->forwards[0]->start == 1);
-    assert(gtid_set->header->intervals->header->forwards[0]->end == 1);
-    gtidSetFree(gtid_set);
-
-    gtid_set_str = "A:1-2,B:3";
-    gtid_set = gtidSetDecode(gtid_set_str, strlen(gtid_set_str));
-    gtidSetAdd(gtid_set, "B", 1, 7);
-    gtidSetRaise(gtid_set, "A", 1, 5);
-    gtidSetRaise(gtid_set, "B", 1, 5);
-    gtidSetRaise(gtid_set, "C", 1, 10);
-    size_t maxlen = 100;
-    char gtid_str[maxlen];
-    int len = gtidSetEncode(gtid_str, maxlen, gtid_set);
-    gtid_str[len] = '\0';
-    //Raise A & B to 5, C to 10, towards C:1-10,B:3:7,A:1-2
-    assert(strcmp(gtid_str, "A:1-5,B:1-5:7,C:1-10") == 0);
-    gtidSetFree(gtid_set);
-
-    /* raise 0*/
-    gtid_set = gtidSetNew();
-    gtidSetAdd(gtid_set, "A", 1, 0);
-    len = gtidSetEncode(gtid_str, maxlen, gtid_set);
-    gtid_str[len] = '\0';
-    assert(strcmp(gtid_str, "") == 0);
-    gtidSetRaise(gtid_set, "A", 1, 0);
-    len = gtidSetEncode(gtid_str, maxlen, gtid_set);
-    gtid_str[len] = '\0';
-    assert(strcmp(gtid_str, "") == 0);
-    gtidSetFree(gtid_set);
-
     return 1;
 }
 
@@ -1374,10 +1227,10 @@ int test_gtidSetInvalidArg() {
 
     gtid_set = gtidSetDecode("A:3-5",5);
 
-    assert(gtidSetAdd(gtid_set, "B", 1, 0) == 0);
-    assert(gtidSetAdd(gtid_set, "A", 1, 0) == 0);
+    assert(gtidSetAdd(gtid_set, "B", 1, 0, 0) == 0);
+    assert(gtidSetAdd(gtid_set, "A", 1, 0, 0) == 0);
 
-    assert(gtidSetRaise(gtid_set, "A", 1, 0) == 0);
+    assert(gtidSetAdd(gtid_set, "A", 1, 1, 0) == 0);
     assert(gtidSetMerge(gtid_set, NULL) == 0);
 
     assert(gtidSetAppend(gtid_set, NULL) == 0);
@@ -1418,26 +1271,6 @@ int test_gtidStat() {
     return 1;
 }
 
-int test_gtidSetRemove() {
-    gtidSet *gtid_set = gtidSetNew();
-    uuidSet *uuid_set;
-
-    assert(gtidSetRemove(gtid_set, "A", 1) == 0);
-    uuid_set = uuidSetDecode("A:1-2:7-8",9);
-    gtidSetAppend(gtid_set, uuid_set);
-    uuid_set = uuidSetDecode("B:3-4:10-11",11);
-    gtidSetAppend(gtid_set, uuid_set);
-
-    assert(gtidSetRemove(gtid_set, "C", 1) == 0);
-    assert(gtidSetRemove(gtid_set, "A", 1) == 1);
-    assert(gtidSetRemove(gtid_set, "B", 1) == 1);
-    assert(gtid_set->header == NULL && gtid_set->tail == NULL);
-    assert(gtidSetRemove(gtid_set, "A", 1) == 0);
-
-    gtidSetFree(gtid_set);
-    return 1;
-}
-
 int test_gtidSetDiff() {
     size_t len;
     char buf[128];
@@ -1447,8 +1280,8 @@ int test_gtidSetDiff() {
     len = gtidSetEncode(buf,sizeof(buf),gtid_set);
     assert(strncmp(buf,"",len) == 0);
 
-    gtidSetAdd(gtid_set,"A",1,10);
-    gtidSetAdd(gtid_set,"B",1,10);
+    gtidSetAdd(gtid_set,"A",1,10,10);
+    gtidSetAdd(gtid_set,"B",1,10,10);
     len = gtidSetEncode(buf,sizeof(buf),gtid_set);
     assert(strncmp(buf,"A:10,B:10",len) == 0);
 
@@ -1456,12 +1289,12 @@ int test_gtidSetDiff() {
     len = gtidSetEncode(buf,sizeof(buf),gtid_set);
     assert(strncmp(buf,"A:10,B:10",len) == 0);
 
-    gtidSetAdd(src,"A",1,10);
+    gtidSetAdd(src,"A",1,10,10);
     gtidSetDiff(gtid_set,src);
     len = gtidSetEncode(buf,sizeof(buf),gtid_set);
     assert(strncmp(buf,"B:10",len) == 0);
 
-    gtidSetAdd(src,"B",1,10);
+    gtidSetAdd(src,"B",1,10,10);
     gtidSetDiff(gtid_set,src);
     len = gtidSetEncode(buf,sizeof(buf),gtid_set);
     assert(strncmp(buf,"",len) == 0);
@@ -1564,8 +1397,8 @@ int test_gtidSeqXsync() {
     gtidSetFree(req);
 
     req = gtidSetNew();
-    gtidSetAddRange(req,"B",1,1,99);
-    gtidSetAddRange(req,"C",1,1,50);
+    gtidSetAdd(req,"B",1,1,99);
+    gtidSetAdd(req,"C",1,1,50);
     offset = gtidSeqXsync(seq,req,&cont);
     len = gtidSetEncode(buf,sizeof(buf),cont);
     assert(offset == 100000);
@@ -1574,8 +1407,8 @@ int test_gtidSeqXsync() {
     gtidSetFree(req);
 
     req = gtidSetNew();
-    gtidSetAddRange(req,"B",1,1,100);
-    gtidSetAddRange(req,"C",1,1,50);
+    gtidSetAdd(req,"B",1,1,100);
+    gtidSetAdd(req,"C",1,1,50);
     offset = gtidSeqXsync(seq,req,&cont);
     assert(offset == 300100);
     len = gtidSetEncode(buf,sizeof(buf),cont);
@@ -1584,8 +1417,8 @@ int test_gtidSeqXsync() {
     gtidSetFree(req);
 
     req = gtidSetNew();
-    gtidSetAddRange(req,"A",1,1,100);
-    gtidSetAddRange(req,"B",1,1,50);
+    gtidSetAdd(req,"A",1,1,100);
+    gtidSetAdd(req,"B",1,1,50);
     offset = gtidSeqXsync(seq,req,&cont);
     assert(offset == 100100);
     len = gtidSetEncode(buf,sizeof(buf),cont);
@@ -1594,9 +1427,9 @@ int test_gtidSeqXsync() {
     gtidSetFree(req);
 
     req = gtidSetNew();
-    gtidSetAddRange(req,"A",1,1,50);
-    gtidSetAddRange(req,"B",1,1,103);
-    gtidSetAddRange(req,"C",1,1,50);
+    gtidSetAdd(req,"A",1,1,50);
+    gtidSetAdd(req,"B",1,1,103);
+    gtidSetAdd(req,"C",1,1,50);
     offset = gtidSeqXsync(seq,req,&cont);
     assert(offset == -1);
     len = gtidSetEncode(buf,sizeof(buf),cont);
@@ -1607,9 +1440,9 @@ int test_gtidSeqXsync() {
     gtidSeqTrim(seq,300200);
 
     req = gtidSetNew();
-    gtidSetAddRange(req,"A",1,1,50);
-    gtidSetAddRange(req,"B",1,1,101);
-    gtidSetAddRange(req,"C",1,1,50);
+    gtidSetAdd(req,"A",1,1,50);
+    gtidSetAdd(req,"B",1,1,101);
+    gtidSetAdd(req,"C",1,1,50);
     offset = gtidSeqXsync(seq,req,&cont);
     assert(offset == 300200);
     len = gtidSetEncode(buf,sizeof(buf),cont);
@@ -1691,6 +1524,8 @@ int test_gtidSeqPsync() {
     assert(len == 19 && !strncmp(buf,"B:100-103,A:100-101",len));
     gtidSetFree(gtid_set);
 
+    gtidSeqDestroy(seq);
+
     return 1;
 }
 
@@ -1712,8 +1547,6 @@ int test_api(void) {
                 test_uuidSetAddInterval() == 1);
         test_cond("uuidSetAdd Chaos",
                 test_uuidSetAddChaos() == 1);
-        test_cond("uuidSetRaise function",
-                test_uuidSetRaise() == 1);
         test_cond("uuidSetRemove function",
                 test_uuidSetRemove() == 1);
         test_cond("uuidSetRemove Chaos",
@@ -1734,8 +1567,6 @@ int test_api(void) {
                 test_uuidSetEncode() == 1);
         test_cond("uuidSet api with invalid args",
             test_uuidSetInvalidArg() == 1);
-        test_cond("uuidSetPurge function",
-                test_uuidSetPurge() == 1);
         test_cond("gtidSetNew function",
                 test_gtidSetNew() == 1);
         test_cond("gtidSetDup function",
@@ -1750,8 +1581,6 @@ int test_api(void) {
                 test_gtidSetAdd() == 1);
         test_cond("gtidSetAppend function",
                 test_gtidSetAppend() == 1);
-        test_cond("gtidSetRaise function",
-                test_gtidSetRaise() == 1);
         test_cond("gtidSetFindUuidSet function",
                 test_gtidSetFind() == 1);
         test_cond("uuidDecode function",
@@ -1762,8 +1591,6 @@ int test_api(void) {
             test_gtidSetInvalidArg() == 1);
         test_cond("gtid Stat",
             test_gtidStat() == 1);
-        test_cond("gtidSetRemove function ",
-            test_gtidSetRemove() == 1);
         test_cond("gtidSetDiff function ",
             test_gtidSetDiff() == 1);
         test_cond("gtidSegment",

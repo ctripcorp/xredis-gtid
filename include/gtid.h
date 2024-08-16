@@ -33,9 +33,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 
- /* gno start from 1 */
 #define GTID_GNO_INITIAL        1
-#define GTID_ENCODE_SKIP_EMPTY  (1<<0)
 
 typedef long long gno_t;
 
@@ -61,14 +59,8 @@ typedef struct uuidSet {
     struct uuidSet *next;
 } uuidSet;
 
-typedef struct uuidSetPurged {
-    size_t node_count;
-    gno_t gno_count;
-    gno_t start;
-    gno_t end;
-} uuidSetPurged;
-
 typedef struct gtidSet {
+    struct uuidSet *current;
     struct uuidSet* header;
     struct uuidSet* tail;
 } gtidSet;
@@ -80,6 +72,11 @@ typedef struct gtidStat {
    gno_t gno_count;
 } gtidStat;
 
+const char *gtidAllocatorName();
+
+ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid, size_t uuid_len, gno_t gno);
+char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len);
+
 uuidSet *uuidSetNew(const char* uuid, size_t uuid_len);
 void uuidSetFree(uuidSet* uuid_set);
 uuidSet *uuidSetDup(uuidSet* uuid_set);
@@ -87,47 +84,41 @@ ssize_t uuidSetEncode(char *buf, size_t maxlen, uuidSet* uuid_set);
 uuidSet *uuidSetDecode(char* repr, int len);
 gno_t uuidSetAdd(uuidSet* uuid_set, gno_t start, gno_t end);
 gno_t uuidSetRemove(uuidSet* uuid_set, gno_t start, gno_t end);
-gno_t uuidSetRaise(uuidSet* uuid_set, gno_t gno);
 gno_t uuidSetMerge(uuidSet* uuid_set, uuidSet* other);
 gno_t uuidSetDiff(uuidSet* uuid_set, uuidSet* other);
 gno_t uuidSetNext(uuidSet* uuid_set, int update);
-gno_t uuidSetCurrent(uuidSet* uuid_set);
 gno_t uuidSetCount(uuidSet* uuid_set);
 int uuidSetContains(uuidSet* uuid_set, gno_t gno);
 size_t uuidSetEstimatedEncodeBufferSize(uuidSet* uuid_set);
-size_t uuidSetPurge(uuidSet *uuid_set, size_t memory_limit, uuidSetPurged *purged);
 void uuidSetGetStat(uuidSet *uuid_set, gtidStat *stat);
 
 gtidSet* gtidSetNew();
 void gtidSetFree(gtidSet* gtid_set);
 gtidSet* gtidSetDup(gtidSet *gtid_set);
 gtidSet *gtidSetDecode(char* repr, size_t len);
-ssize_t gtidSetEncodeWithFlags(char *buf, size_t maxlen, gtidSet* gtid_set, int flags);
-#define gtidSetEncode(buf, maxlen, gtid_set) gtidSetEncodeWithFlags(buf, maxlen, gtid_set, GTID_ENCODE_SKIP_EMPTY)
-gno_t gtidSetAddRange(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t start, gno_t end);
-#define gtidSetAdd(gtid_set, uuid, uuid_len, gno) gtidSetAddRange(gtid_set, uuid, uuid_len, gno, gno)
-gno_t gtidSetRaise(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
+ssize_t gtidSetEncode(char* buf, size_t maxlen, gtidSet* gtid_set);
+gno_t gtidSetAdd(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t start, gno_t end);
+gno_t gtidSetRemove(gtidSet *gtid_set, const char* uuid, size_t uuid_len, gno_t start, gno_t end);
 gno_t gtidSetMerge(gtidSet* gtid_set, gtidSet* other);
 gno_t gtidSetDiff(gtidSet* gtid_set, gtidSet* other);
-gno_t gtidSetAppend(gtidSet *gtid_set, uuidSet *uuid_set);
-uuidSet* gtidSetFind(gtidSet* gtid_set,const char* uuid, size_t len);
-int gtidSetRemove(gtidSet* gtid_set, const char *uuid, size_t uuid_len);
+gno_t gtidSetNext(gtidSet* gtid_set, const char* uuid, size_t uuid_len, int upate);
 gno_t gtidSetCount(gtidSet *gtid_set);
+int gitSetContains(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
 size_t gtidSetEstimatedEncodeBufferSize(gtidSet* gtid_set);
 void gtidSetGetStat(gtidSet *gtid_set, gtidStat *stat);
 
-ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid, size_t uuid_len, gno_t gno);
-char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len);
-
-const char *gtidAllocatorName();
+/* Cache current uuid set to skip uuid compare. Note that it would crash
+ * if current uuid set not cached or removed. */
+void gtidSetCurrentUuidSetUpdate(gtidSet *gtid_set, const char *uuid, size_t uuid_len);
+#define gtidSetCurrentUuidSetNext(gtid_set, update) uuidSetNext(gtid_set->current, update)
 
 typedef uint16_t segoff_t;
 
 #define SEGOFF_MAX UINT16_MAX
 #define SEGMENT_SIZE (SEGOFF_MAX+1)
 
-/* assuming every command is 1024 byte */
-#define GTID_SEGMENT_NGNO_DEFAULT (SEGMENT_SIZE/1024)
+#define GTID_ESTIMATED_CMD_SIZE 1024
+#define GTID_SEGMENT_NGNO_DEFAULT (SEGMENT_SIZE/GTID_ESTIMATED_CMD_SIZE)
 
 typedef struct gtidSegment {
     struct gtidSegment *next;
