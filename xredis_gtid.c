@@ -12,7 +12,6 @@ sds gtidSetDump(gtidSet *gtid_set) {
     return gtidrepr;
 }
 
-uuidSet* gtidSetFind(gtidSet* gtid_set, const char* uuid, size_t uuid_len);
 /* return true if set1 and set2 has common uuid */
 int gtidSetRelated(gtidSet *set1, gtidSet *set2) {
     uuidSet *uuid_set = set2->header;
@@ -42,30 +41,41 @@ int gtidSetEqual(gtidSet *set1, gtidSet *set2) {
     return count ? 0 : 1;
 }
 
+sds dumpServerReplMode() {
+    return sdscatprintf(sdsempty(),"{(%s:%lld),(%s:%lld)}",
+            replModeName(server.repl_mode->mode),
+            server.repl_mode->from,
+            replModeName(server.prev_repl_mode->mode),
+            server.prev_repl_mode->from);
+}
 
-void resetServerReplMode(int mode) {
+void resetServerReplMode(int mode, const char *msg) {
+    sds prev, cur;
+    prev = dumpServerReplMode();
     replModeInit(server.prev_repl_mode);
     server.repl_mode->mode = mode;
     server.repl_mode->from = server.master_repl_offset;
-    serverLog(LL_NOTICE, "[gtid] Reset repl mode to %s:%lld",
-            replModeName(mode),server.master_repl_offset);
+    cur = dumpServerReplMode();
+    serverLog(LL_NOTICE,"[gtid] reset repl mode to %s: %s => %s (%s)",
+            replModeName(mode), prev, cur, msg);
+    sdsfree(prev), sdsfree(cur);
 }
 
-void shiftServerReplMode(int mode) {
+void shiftServerReplMode(int mode, const char *msg) {
+    sds prev, cur;
     serverAssert(mode != REPL_MODE_UNSET);
     if (server.repl_mode->mode == mode) return;
+    prev = dumpServerReplMode();
     if (server.repl_mode->from != server.master_repl_offset) {
         server.prev_repl_mode->from = server.repl_mode->from;
         server.prev_repl_mode->mode = server.repl_mode->mode;
-        serverLog(LL_NOTICE,"[gtid] Save repl mode %s:%lld",
-                replModeName(server.repl_mode->mode),server.repl_mode->from);
     }
     server.repl_mode->from = server.master_repl_offset;
     server.repl_mode->mode = mode;
-    serverLog(LL_NOTICE, "[gtid] Switch to repl mode %s:%lld",
-            replModeName(mode),server.master_repl_offset);
-    serverLog(LL_WARNING, "[gtid] Disconnect slaves to sync repl mode.");
-    disconnectSlaves();
+    cur = dumpServerReplMode();
+    serverLog(LL_NOTICE,"[gtid] shift repl mode to %s: %s => %s (%s)",
+            replModeName(mode), prev, cur, msg);
+    sdsfree(prev), sdsfree(cur);
 }
 
 int locateServerReplMode(long long offset, int *switch_mode) {
@@ -114,12 +124,17 @@ void gtidCommand(client *c) {
         for (int i=1, len=GTID_COMMAN_ARGC + 1; i < len && sdslen(args) < 128; i++) {
             args = sdscatprintf(args, "`%.*s`, ", 128-(int)sdslen(args), (char*)c->argv[i]->ptr);
         }
-        addReplyErrorFormat(c,"gtid command is executed, %s",args);
-        sdsfree(args);
+        addReplyErrorFormat(c,"gtid command already executed, %s",args);
         if(isGtidExecCommand(c)) {
             discardTransaction(c);
         }
-        server.gtid_ignored_cmd_count++;
+        if (server.masterhost == NULL) {
+            server.gtid_ignored_cmd_count++;
+        } else {
+            //TODO don't panic on GA
+            serverPanic("gtid command already executed, %s", args);
+        }
+        sdsfree(args);
         return;
     }
     int argc = c->argc;
@@ -417,15 +432,17 @@ err:
 
 int LoadGtidInfoAuxFields(robj* key, robj* val) {
     if (!strcasecmp(key->ptr, GTID_AUX_REPL_MODE)) {
+        int repl_mode;
+        char msg[64];
         if (!strcasecmp(val->ptr, "xsync")) {
-            resetServerReplMode(REPL_MODE_XSYNC);
+            repl_mode = REPL_MODE_XSYNC;
         } else if (!strcasecmp(val->ptr, "psync")) {
-            resetServerReplMode(REPL_MODE_PSYNC);
+            repl_mode = REPL_MODE_PSYNC;
         } else {
-            serverLog(LL_WARNING,
-                    "[gtid] Parsed invalid repl mode: %s",(sds)val->ptr);
-            resetServerReplMode(REPL_MODE_PSYNC);
+            repl_mode = REPL_MODE_PSYNC;
         }
+        snprintf(msg,sizeof(msg),"auxload %s=%s",(sds)key->ptr,(sds)val->ptr);
+        resetServerReplMode(repl_mode,msg);
         return 1;
     } else if (!strcasecmp(key->ptr, GTID_AUX_EXECUTED)) {
         gtidSetFree(server.gtid_executed);
@@ -926,8 +943,8 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             /* PSYNC => XFULLRESYNC */
             serverLog(LL_NOTICE,
                     "[gtid] repl mode switch: psync => xsync (xfullresync)");
+            /* Repl mode will be reset on rdb loading */
             replicationDiscardCachedMaster();
-            shiftServerReplMode(REPL_MODE_XSYNC);
             sdsfree(reply);
             return PSYNC_FULLRESYNC;
         }
@@ -977,7 +994,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             if (result == PSYNC_CONTINUE) {
                 replicationDiscardCachedMaster();
                 disconnectSlaves();
-                shiftServerReplMode(REPL_MODE_XSYNC);
+                shiftServerReplMode(REPL_MODE_XSYNC, "slave psync=>xcontinue");
                 if (server.repl_backlog == NULL)
                     ctrip_createReplicationBacklog();
             }
@@ -994,9 +1011,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             /* XSYNC => FULLRESYNC */
             serverLog(LL_NOTICE,
                     "[gtid] repl mode switch: xsync => psync (fullresync)");
-
-            shiftServerReplMode(REPL_MODE_PSYNC);
-            /* handled by origin psync */
+            /* Repl mode will be reset on rdb loading */
             return -1;
         }
 
@@ -1042,7 +1057,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             replicationCreateMasterClient(conn,-1);
 
             disconnectSlaves();
-            shiftServerReplMode(REPL_MODE_PSYNC);
+            shiftServerReplMode(REPL_MODE_PSYNC, "slave xsync=>continue");
             sdsfree(reply);
             return PSYNC_CONTINUE;
         }

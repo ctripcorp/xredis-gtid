@@ -106,6 +106,7 @@ gno_t gtidSetCount(gtidSet *gtid_set);
 int gitSetContains(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
 size_t gtidSetEstimatedEncodeBufferSize(gtidSet* gtid_set);
 void gtidSetGetStat(gtidSet *gtid_set, gtidStat *stat);
+uuidSet* gtidSetFind(gtidSet* gtid_set, const char* uuid, size_t uuid_len);
 
 /* Cache current uuid set to skip uuid compare. Note that it would crash
  * if current uuid set not cached or removed. */

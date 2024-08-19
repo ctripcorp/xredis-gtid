@@ -25,7 +25,6 @@ void gtidIntervalNodeFree(gtidIntervalNode* interval);
 ssize_t gtidIntervalEncode(char *buf, size_t maxlen, gno_t start, gno_t end);
 int gtidIntervalDecode(char* interval_str, size_t len, gno_t *pstart, gno_t *pend);
 void uuidDup(char **pdup, size_t *pdup_len, const char* uuid, int uuid_len);
-uuidSet* gtidSetFind(gtidSet* gtid_set, const char* uuid, size_t uuid_len);
 gno_t gtidSetAppend(gtidSet *gtid_set, uuidSet *uuid_set);
 
 int test_gtidIntervalNew() {
