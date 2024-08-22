@@ -133,7 +133,7 @@ void gtidIntervalSkipListFree(gtidIntervalSkipList *gsl) {
 }
 
 gtidIntervalSkipList *gtidIntervalSkipListDup(gtidIntervalSkipList *gsl) {
-    gtidIntervalNode *leads[GTID_INTERVAL_SKIPLIST_MAXLEVEL], *cur, *prev, *x;
+    gtidIntervalNode *leads[GTID_INTERVAL_SKIPLIST_MAXLEVEL], *cur, *tail, *x;
     gtidIntervalSkipList *dup = gtid_malloc(sizeof(*gsl));
 
     dup->level = gsl->level;
@@ -144,7 +144,7 @@ gtidIntervalSkipList *gtidIntervalSkipListDup(gtidIntervalSkipList *gsl) {
     for (int i = 0; i < GTID_INTERVAL_SKIPLIST_MAXLEVEL; i++)
         leads[i] = dup->header;
 
-    prev = gsl->header;
+    tail = dup->header;
     cur = gsl->header->forwards[0];
     while (cur) {
         x = gtidIntervalNodeNew(cur->level,cur->start,cur->end);
@@ -152,11 +152,11 @@ gtidIntervalSkipList *gtidIntervalSkipListDup(gtidIntervalSkipList *gsl) {
             leads[level]->forwards[level] = x;
             leads[level] = x;
         }
-        prev = cur;
+        tail = x;
         cur = cur->forwards[0];
     }
 
-    dup->tail = prev;
+    dup->tail = tail;
     return dup;
 }
 
@@ -584,6 +584,7 @@ void gtidSetFree(gtidSet *gtid_set) {
 gtidSet* gtidSetDup(gtidSet *gtid_set) {
     gtidSet *result = gtid_malloc(sizeof(gtidSet));
     uuidSet *cur = gtid_set->header, *x = NULL, *p = NULL;
+    result->current = NULL;
     result->header = NULL;
     while (cur) {
         x = uuidSetDup(cur);
@@ -945,8 +946,9 @@ void gtidSeqAppend(gtidSeq *seq, const char *uuid, size_t uuid_len,
 
     if (lastseg) {
         long long tail_offset;
+        assert(lastseg->ngno > 0);
         tail_offset = lastseg->base_offset + lastseg->deltas[lastseg->ngno-1];
-        assert( tail_offset < offset);
+        assert(tail_offset < offset);
     }
 
     if(lastseg == NULL /* no previous segment */ ||
@@ -959,7 +961,7 @@ void gtidSeqAppend(gtidSeq *seq, const char *uuid, size_t uuid_len,
 
     size_t prev_capacity = lastseg->capacity;
     gtidSegmentAppend(lastseg,offset);
-    seq->nfreeseg_deltas += lastseg->capacity - prev_capacity;
+    seq->nsegment_deltas += lastseg->capacity - prev_capacity;
 }
 
 void gtidSeqTrim(gtidSeq *seq, long long until) {

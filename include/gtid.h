@@ -143,8 +143,8 @@ typedef struct gtidSeq {
     size_t segment_size;
     size_t nsegment;
     size_t nfreeseg;
-    size_t nsegment_deltas; /* deltas count of occupied segment list */
-    size_t nfreeseg_deltas; /* deltas count of vacant segment list */
+    size_t nsegment_deltas;
+    size_t nfreeseg_deltas;
     struct gtidSegment *firstseg; /* head of occupied segment list */
     struct gtidSegment *lastseg; /* tail of occupied segment list */
     struct gtidSegment *freeseg; /* head of vacant segment list */

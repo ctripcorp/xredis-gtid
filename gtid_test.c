@@ -1329,6 +1329,10 @@ int test_gtidSeqAppend() {
     assert(seq->nsegment == 2 && seq->lastseg->ngno == 1);
     gtidSeqAppend(seq,"B",1,2,200000);
     assert(seq->nsegment == 3 && seq->lastseg->ngno == 1);
+
+    for (int i = 1; i < 10001; i++) {
+        gtidSeqAppend(seq,"C",1,i,200000+i*10);
+    }
     gtidSeqDestroy(seq);
     return 1;
 }
