@@ -572,6 +572,7 @@ gtidSet* gtidSetNew() {
 }
 
 void gtidSetFree(gtidSet *gtid_set) {
+    if (gtid_set == NULL) return;
     uuidSet *cur = gtid_set->header, *next;
     while(cur != NULL) {
         next = cur->next;
