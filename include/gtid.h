@@ -103,6 +103,7 @@ gno_t gtidSetMerge(gtidSet* gtid_set, gtidSet* other);
 gno_t gtidSetDiff(gtidSet* gtid_set, gtidSet* other);
 gno_t gtidSetNext(gtidSet* gtid_set, const char* uuid, size_t uuid_len, int upate);
 gno_t gtidSetCount(gtidSet *gtid_set);
+int gtidSetEqual(gtidSet *set1, gtidSet *set2);
 int gitSetContains(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
 size_t gtidSetEstimatedEncodeBufferSize(gtidSet* gtid_set);
 void gtidSetGetStat(gtidSet *gtid_set, gtidStat *stat);

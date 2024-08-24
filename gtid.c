@@ -789,6 +789,25 @@ void gtidStatMerge(gtidStat *sum, gtidStat *one) {
     sum->gno_count += one->gno_count;
 }
 
+int gtidSetEqual(gtidSet *set1, gtidSet *set2) {
+    gtidSet *set;
+    gno_t count;
+
+    set = gtidSetDup(set1);
+    gtidSetDiff(set,set2);
+    count = gtidSetCount(set);
+    gtidSetFree(set);
+
+    if (count) return 0;
+
+    set = gtidSetDup(set2);
+    gtidSetDiff(set,set1);
+    count = gtidSetCount(set);
+    gtidSetFree(set);
+
+    return count ? 0 : 1;
+}
+
 void uuidSetGetStat(uuidSet *uuid_set, gtidStat *stat) {
     stat->uuid_count = 1;
     stat->used_memory = uuid_set->intervals->node_count * GTID_INTERVAL_MEMORY;
