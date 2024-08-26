@@ -504,14 +504,14 @@ typedef struct syncRequest {
         struct {
             sds replid;
             long long offset;
-        } p;
+        } p; /* psync */
         struct {
             gtidSet *gtid_slave;
             long long maxgap;
-        } x;
+        } x; /* xsync */
         struct {
             sds msg;
-        } e;
+        } i; /* invalid */
     };
 } syncRequest;
 
@@ -531,7 +531,7 @@ void syncRequestFree(syncRequest *request) {
         gtidSetFree(request->x.gtid_slave);
         break;
     case REPL_MODE_UNSET:
-        sdsfree(request->e.msg);
+        sdsfree(request->i.msg);
         break;
     default:
         serverPanic("unexpected repl mode");
@@ -544,7 +544,7 @@ void masterParsePsyncRequest(syncRequest *request, robj *replid, robj *offset) {
     long long value;
     if (getLongLongFromObject(offset,&value) != C_OK) {
         request->mode = REPL_MODE_UNSET;
-        request->e.msg = sdscatprintf(sdsempty(),"offset %s invalid",(sds)offset->ptr);
+        request->i.msg = sdscatprintf(sdsempty(),"offset %s invalid",(sds)offset->ptr);
     } else {
         request->mode = REPL_MODE_PSYNC;
         request->p.replid = sdsdup(replid->ptr);
@@ -560,7 +560,7 @@ void masterParseXsyncRequest(syncRequest *request, robj *gtidset, int optargc,
 
     if ((gtid_slave = gtidSetDecode(gtid_repr,sdslen(gtid_repr))) == NULL) {
         request->mode = REPL_MODE_UNSET;
-        request->e.msg = sdscatprintf(sdsempty(), "invalid gtid.set %s", gtid_repr);
+        request->i.msg = sdscatprintf(sdsempty(), "invalid gtid.set %s", gtid_repr);
         return;
     }
 
@@ -587,7 +587,7 @@ syncRequest *masterParseSyncRequest(client *c) {
         masterParseXsyncRequest(request,c->argv[2]->ptr,c->argc-3,c->argv+3);
     } else {
         request->mode = REPL_MODE_UNSET;
-        request->e.msg = sdscatprintf(sdsempty(), "invalid repl mode: %s", mode);
+        request->i.msg = sdscatprintf(sdsempty(), "invalid repl mode: %s", mode);
     }
     return request;
 }
@@ -620,6 +620,8 @@ void syncLocateResultDeinit(syncLocateResult *slr) {
 void masterLocateSyncRequest(syncLocateResult *slr, int request_mode,
         long long psync_offset) {
     serverAssert(server.repl_mode->mode != REPL_MODE_UNSET);
+    serverAssert(request_mode == REPL_MODE_PSYNC ||
+            request_mode == REPL_MODE_XSYNC);
 
     if (psync_offset > server.repl_mode->from) {
         if (request_mode == server.repl_mode->mode) {
@@ -634,7 +636,14 @@ void masterLocateSyncRequest(syncLocateResult *slr, int request_mode,
         }
     } else if (psync_offset == server.repl_mode->from) {
         slr->locate_mode = server.repl_mode->mode;
-        slr->locate_type = LOCATE_TYPE_SWITCH;
+        if (request_mode == server.repl_mode->mode) {
+            slr->locate_type = LOCATE_TYPE_CUR;
+        } else if (server.prev_repl_mode->mode == REPL_MODE_UNSET) {
+            slr->locate_type = LOCATE_TYPE_INVALID;
+            slr->i.msg = sdsnew("prev repl mode not valid");
+        } else {
+            slr->locate_type = LOCATE_TYPE_SWITCH;
+        }
     } else if (server.prev_repl_mode->mode == REPL_MODE_UNSET) {
         slr->locate_mode = LOCATE_TYPE_INVALID;
         slr->i.msg = sdscatprintf(sdsempty(),
@@ -927,7 +936,7 @@ syncResult *masterAnaSyncRequest(syncRequest *request) {
         break;
     case REPL_MODE_UNSET:
         result->action = SYNC_ACTION_FULL;
-        result->f.msg = request->e.msg, request->e.msg = NULL;
+        result->f.msg = request->i.msg, request->i.msg = NULL;
         break;
     }
     return result;
@@ -1635,4 +1644,126 @@ void gtidxCommand(client *c) {
     }
 
 }
+
+#ifdef REDIS_TEST
+int gtidTest(int argc, char **argv, int accurate) {
+    UNUSED(argc), UNUSED(argv), UNUSED(accurate);
+
+    int error = 0;
+    server.maxmemory_policy = MAXMEMORY_FLAG_LFU;
+    if (!server.logfile) server.logfile = zstrdup(CONFIG_DEFAULT_LOGFILE);
+
+    TEST("gtid - parse xsync request") {
+        syncRequest *request = syncRequestNew();
+        robj *optargv[2];
+        robj *gtidset = createStringObject("A:1-100,B", 9);
+        optargv[0] = createStringObject("MAXGAP",6);
+        optargv[1] = createStringObject("10000", 5);
+        masterParseXsyncRequest(request,gtidset,2,optargv);
+        test_assert(request->mode == REPL_MODE_XSYNC);
+        test_assert(request->x.maxgap == 10000);
+        test_assert(gtidSetCount(request->x.gtid_slave) == 100);
+        decrRefCount(optargv[0]);
+        decrRefCount(optargv[1]);
+        decrRefCount(gtidset);
+        syncRequestFree(request);
+    }
+
+    TEST("gtid - parse invalid xsync request") {
+        syncRequest *request = syncRequestNew();
+        robj *gtidset = createStringObject("hello:world", 11);
+        masterParseXsyncRequest(request,gtidset,0,NULL);
+        test_assert(request->mode == REPL_MODE_UNSET);
+        test_assert(!strcmp(request->i.msg, "invalid gtid.set hello:world"));
+        decrRefCount(gtidset);
+        syncRequestFree(request);
+    }
+
+    TEST("gtid - locate sync request") {
+        syncLocateResult slr[1];
+
+        /* {(xsync:2000), (psync:1000)}*/
+        server.prev_repl_mode->from = 1000, server.prev_repl_mode->mode = REPL_MODE_PSYNC;
+        server.repl_mode->from = 2000, server.repl_mode->mode = REPL_MODE_XSYNC;
+
+        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,3000);
+        test_assert(slr->locate_type == LOCATE_TYPE_CUR);
+        test_assert(slr->locate_mode == REPL_MODE_XSYNC);
+
+        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,2000);
+        test_assert(slr->locate_type == LOCATE_TYPE_CUR);
+        test_assert(slr->locate_mode == REPL_MODE_XSYNC);
+
+        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,2000);
+        test_assert(slr->locate_type == LOCATE_TYPE_SWITCH);
+        test_assert(slr->locate_mode == REPL_MODE_XSYNC);
+
+        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,1000);
+        test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
+        syncLocateResultDeinit(slr);
+
+        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,1000);
+        test_assert(slr->locate_type == LOCATE_TYPE_PREV);
+        test_assert(slr->locate_mode == REPL_MODE_PSYNC);
+        test_assert(slr->p.limit == 1000);
+
+        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,500);
+        test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
+        syncLocateResultDeinit(slr);
+
+        /* {(psync:2000), (xsync:1000)}*/
+        server.prev_repl_mode->from = 1000, server.prev_repl_mode->mode = REPL_MODE_XSYNC;
+        server.repl_mode->from = 2000, server.repl_mode->mode = REPL_MODE_PSYNC;
+
+        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,3000);
+        test_assert(slr->locate_type == LOCATE_TYPE_CUR);
+        test_assert(slr->locate_mode == REPL_MODE_PSYNC);
+
+        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,2000);
+        test_assert(slr->locate_type == LOCATE_TYPE_CUR);
+        test_assert(slr->locate_mode == REPL_MODE_PSYNC);
+
+        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,2000);
+        test_assert(slr->locate_type == LOCATE_TYPE_SWITCH);
+        test_assert(slr->locate_mode == REPL_MODE_PSYNC);
+
+        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,1000);
+        test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
+        syncLocateResultDeinit(slr);
+
+        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,1000);
+        test_assert(slr->locate_type == LOCATE_TYPE_PREV);
+        test_assert(slr->locate_mode == REPL_MODE_XSYNC);
+        test_assert(slr->p.limit == 1000);
+
+        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,500);
+        test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
+        syncLocateResultDeinit(slr);
+
+        /* {(xsync:2000), {?:1000}}*/
+        server.prev_repl_mode->from = 1000, server.prev_repl_mode->mode = REPL_MODE_UNSET;
+        server.repl_mode->from = 2000, server.repl_mode->mode = REPL_MODE_XSYNC;
+
+        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,3000);
+        test_assert(slr->locate_type == LOCATE_TYPE_CUR);
+        test_assert(slr->locate_mode == REPL_MODE_XSYNC);
+
+        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,2000);
+        test_assert(slr->locate_type == LOCATE_TYPE_CUR);
+        test_assert(slr->locate_mode == REPL_MODE_XSYNC);
+
+        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,2000);
+        test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
+        syncLocateResultDeinit(slr);
+
+        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,1000);
+        test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
+
+        syncLocateResultDeinit(slr);
+    }
+
+    return error;
+}
+
+#endif
 
