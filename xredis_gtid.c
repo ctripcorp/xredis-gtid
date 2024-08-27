@@ -326,6 +326,18 @@ int gtidSetRelated(gtidSet *set1, gtidSet *set2) {
     return 0;
 }
 
+void serverUpdateCurrentUuidSetNextGno(char *msg) {
+    gno_t curnext, lostnext;
+    curnext = gtidSetCurrentUuidSetNext(server.gtid_executed,0);
+    lostnext = gtidSetNext(server.gtid_lost,server.uuid,server.uuid_len,0);
+    if (curnext < lostnext) {
+        gtidSetCurrentUuidSetSetNextGno(server.gtid_executed, lostnext);
+        serverLog(LL_NOTICE,
+                "[gtid] current uuid next gno updated from %lld to %lld: %s",
+                curnext, lostnext, msg);
+    }
+}
+
 sds dumpServerReplMode() {
     return sdscatprintf(sdsempty(),"{(%s:%lld),(%s:%lld)}",
             replModeName(server.repl_mode->mode),
@@ -418,6 +430,7 @@ int LoadGtidInfoAuxFields(robj* key, robj* val) {
         server.gtid_executed = gtidSetDecode(val->ptr, sdslen(val->ptr));
         gtidSetCurrentUuidSetUpdate(server.gtid_executed,server.uuid,
                 server.uuid_len);
+        serverUpdateCurrentUuidSetNextGno("load aux "GTID_AUX_EXECUTED);
         return 1;
     } else if (!strcasecmp(key->ptr, GTID_AUX_LOST)) {
         gtidSet *gtid_lost;
@@ -425,6 +438,7 @@ int LoadGtidInfoAuxFields(robj* key, robj* val) {
         if (!(gtid_lost = gtidSetDecode(val->ptr, sdslen(val->ptr))))
             gtid_lost = gtidSetNew();
         server.gtid_lost = gtid_lost;
+        serverUpdateCurrentUuidSetNextGno("load aux "GTID_AUX_LOST);
         return 1;
     }
     return 0;
@@ -582,9 +596,9 @@ syncRequest *masterParseSyncRequest(client *c) {
     syncRequest *request = syncRequestNew();
     char *mode = c->argv[0]->ptr;
     if (!strcasecmp(mode,"psync")) {
-        masterParsePsyncRequest(request,c->argv[1]->ptr,c->argv[2]->ptr);
+        masterParsePsyncRequest(request,c->argv[1],c->argv[2]);
     } else if (!strcasecmp(mode,"xsync")) {
-        masterParseXsyncRequest(request,c->argv[2]->ptr,c->argc-3,c->argv+3);
+        masterParseXsyncRequest(request,c->argv[2],c->argc-3,c->argv+3);
     } else {
         request->mode = REPL_MODE_UNSET;
         request->i.msg = sdscatprintf(sdsempty(), "invalid repl mode: %s", mode);
@@ -680,21 +694,23 @@ void masterLocateSyncRequest(syncLocateResult *slr, int request_mode,
 typedef struct syncResult {
     int mode;
     int action;
-    long long offset;
-    long long limit;
+    long long offset; /* send offset start */
+    long long limit; /* send offset limit */
+    sds msg;
     union {
         struct {
             gtidSet *gtid_cont;
             gtidSet *gtid_lost;
-            sds msg;
         } xc; /* xcontinue */
         struct {
             sds replid;
-            size_t offset;
+            /* offset that slave has logically received. will be propagate
+             * to slave when xcontinue => continue to align repl offset
+             * of master and slave.
+             * Note that to keep compatible with origin replication proptocol,
+             * when offset < 0, it will not be propragte to slave. */
+            long long offset;
         } cc; /* continue */
-        struct {
-            sds msg;
-        } f; /* fullresync */
     };
 } syncResult;
 
@@ -711,15 +727,15 @@ void syncResultFree(syncResult *result) {
     case SYNC_ACTION_XCONTINUE:
         gtidSetFree(result->xc.gtid_cont);
         gtidSetFree(result->xc.gtid_lost);
-        sdsfree(result->xc.msg);
         break;
     case SYNC_ACTION_CONTINUE:
         sdsfree(result->cc.replid);
         break;
     case SYNC_ACTION_FULL:
-        sdsfree(result->f.msg);
         break;
     }
+    sdsfree(result->msg);
+    zfree(result);
 }
 
 void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
@@ -733,7 +749,7 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
         psync_offset < server.repl_backlog_off ||
         psync_offset > (server.repl_backlog_off+server.repl_backlog_histlen)) {
         result->action = SYNC_ACTION_FULL;
-        result->f.msg = sdscatprintf(sdsempty(),
+        result->msg = sdscatprintf(sdsempty(),
                 "psync offset(%lld) not in backlog [%lld,%lld)",
                 psync_offset, server.repl_backlog_off,
                 server.repl_backlog_off+server.repl_backlog_histlen);
@@ -745,7 +761,7 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
 
     if (slr.locate_type == LOCATE_TYPE_INVALID) {
         result->action = SYNC_ACTION_FULL;
-        result->f.msg = slr.i.msg, slr.i.msg = NULL;
+        result->msg = slr.i.msg, slr.i.msg = NULL;
     } else if (slr.locate_type == LOCATE_TYPE_PREV ||
             slr.locate_type == LOCATE_TYPE_SWITCH) {
         if ((!strcasecmp(master_replid, server.replid) &&
@@ -757,6 +773,9 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
             if (slr.locate_type == LOCATE_TYPE_PREV) {
                 result->action = SYNC_ACTION_CONTINUE;
                 result->limit = slr.p.limit;
+                result->cc.replid = sdsnew(server.replid);
+                result->cc.offset = -1;
+                result->msg = sdsnew("before psync => xsync");
             } else {
                 gtidSet *gtid_master, *gtid_cont, *gtid_xsync;
                 sds gtid_master_repr, gtid_executed_repr, gtid_lost_repr,
@@ -781,7 +800,7 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
                 result->action = SYNC_ACTION_XCONTINUE;
                 result->xc.gtid_cont = gtid_cont, gtid_cont = NULL;
                 result->xc.gtid_lost = gtidSetNew();
-                result->xc.msg = sdsnew("switched from psync to xsync");
+                result->msg = sdsnew("psync => xsync");
 
                 sdsfree(gtid_master_repr), sdsfree(gtid_executed_repr);
                 sdsfree(gtid_lost_repr), sdsfree(gtid_continue_repr);
@@ -791,7 +810,7 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
             }
         } else {
             result->action = SYNC_ACTION_FULL;
-            result->f.msg = sdscatprintf(sdsempty(),
+            result->msg = sdscatprintf(sdsempty(),
                     "(%s:%lld) can't continue in {(%s:%lld),(%s:%lld)}",
                     master_replid, psync_offset,
                     server.replid, server.repl_mode->from,
@@ -833,7 +852,7 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
      *   instance of another shard asks for xsync */
     if (!gtidSetRelated(gtid_master,gtid_slave)) {
         result->action = SYNC_ACTION_FULL;
-        result->f.msg = sdscatprintf(sdsempty(),
+        result->msg = sdscatprintf(sdsempty(),
                 "gtid.set-master(%s) and gtid.set-slave(%s) not related",
                 gtid_master_repr, gtid_slave_repr);
         goto end;
@@ -865,7 +884,7 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
 
     if (slr.locate_type == LOCATE_TYPE_INVALID) {
         result->action = SYNC_ACTION_FULL;
-        result->f.msg = slr.i.msg, slr.i.msg = NULL;
+        result->msg = slr.i.msg, slr.i.msg = NULL;
         goto end;
     }
 
@@ -890,7 +909,7 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
     gno_t gap = gtidSetCount(gtid_mlost) + gtidSetCount(gtid_slost);
     if (gap > maxgap) {
         result->action = SYNC_ACTION_FULL;
-        result->f.msg = sdscatprintf(sdsempty(), "gap=%lld > maxgap=%lld",
+        result->msg = sdscatprintf(sdsempty(), "gap=%lld > maxgap=%lld",
                 gap, maxgap);
         goto end;
     }
@@ -900,18 +919,22 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
         result->limit = slr.p.limit;
         result->xc.gtid_cont = gtid_cont, gtid_cont = NULL;
         result->xc.gtid_lost = gtid_mlost, gtid_mlost = NULL;
+        result->msg = sdscatprintf(sdsempty(),
+                "gap=%lld <= maxgap=%lld",gap,maxgap);
     } else if (slr.locate_type == LOCATE_TYPE_SWITCH) {
         result->action = SYNC_ACTION_CONTINUE;
         result->cc.replid = sdsnew(server.replid);
-        result->cc.offset = server.master_repl_offset+1;
+        /* logically, offset (.. psync_offset-1] has already received */
+        result->cc.offset = psync_offset-1;
+        result->msg = sdsnew("xsync => psync");
     } else {
         result->action = SYNC_ACTION_XCONTINUE;
         result->xc.gtid_cont = gtid_cont, gtid_cont = NULL;
         result->xc.gtid_lost = gtid_mlost, gtid_mlost = NULL;
+        result->msg = sdscatprintf(sdsempty(),
+                "gap=%lld <= maxgap=%lld",gap,maxgap);
     }
 
-    result->xc.msg = sdscatprintf(sdsempty(),"gap(%lld) < maxgap(%lld)",
-            gap,maxgap);
 
 end:
     syncLocateResultDeinit(&slr);
@@ -936,7 +959,7 @@ syncResult *masterAnaSyncRequest(syncRequest *request) {
         break;
     case REPL_MODE_UNSET:
         result->action = SYNC_ACTION_FULL;
-        result->f.msg = request->i.msg, request->i.msg = NULL;
+        result->msg = request->i.msg, request->i.msg = NULL;
         break;
     }
     return result;
@@ -1018,13 +1041,13 @@ void masterSetupPartialSynchronization(client *c, long long offset,
     }
 
     serverLog(LL_NOTICE,
-        "[xsync] Sent %lld bytes of backlog starting from offset %lld.",
+        "[gtid] Sent %lld bytes of backlog starting from offset %lld.",
         sent, offset);
 
     if (limit > 0) {
         writeToClient(c,0);
         serverLog(LL_NOTICE,
-                "[xsync] Disconnect slave %s to notify repl mode switched.",
+                "[gtid] Disconnect slave %s to notify repl mode switched.",
                 replicationGetSlaveName(c));
         freeClientAsync(c);
         return;
@@ -1053,12 +1076,11 @@ int masterReplySyncRequest(client *c, syncResult *result) {
         sds gtid_lost_repr = NULL, gtid_delta_lost_repr = NULL,
             gtid_updated_lost_repr = NULL, gtid_cont_repr = NULL;
 
-        serverLog(LL_NOTICE, "[%s] Partial sync request from %s accepted: %s", replModeName(result->mode), replicationGetSlaveName(c), result->xc.msg);
-
         gtid_lost_repr = gtidSetDump(server.gtid_lost);
         gtid_delta_lost_repr = gtidSetDump(result->xc.gtid_lost);
 
         gtidSetMerge(server.gtid_lost,result->xc.gtid_lost);
+        serverUpdateCurrentUuidSetNextGno("master xcontinue");
 
         gtid_updated_lost_repr = gtidSetDump(server.gtid_lost);
         serverLog(LL_NOTICE, "[%s] gtid.set-lost(%s) = gtid.set-lost(%s) + gtid.set-delta_lost(%s)", replModeName(result->mode), gtid_updated_lost_repr, gtid_lost_repr, gtid_delta_lost_repr);
@@ -1070,6 +1092,9 @@ int masterReplySyncRequest(client *c, syncResult *result) {
         }
 
         gtid_cont_repr = gtidSetDump(result->xc.gtid_cont);
+
+        serverLog(LL_NOTICE, "[%s] Partial sync request from %s accepted: %s, offset=%lld, limit=%lld, gtid.set-cont=%s, master.sid=%s", replModeName(result->mode), replicationGetSlaveName(c), result->msg, result->offset, result->limit, gtid_cont_repr, server.uuid);
+
         buflen = sdslen(gtid_cont_repr)+256;
         buf = zcalloc(buflen);
         buflen = snprintf(buf,buflen,
@@ -1085,14 +1110,20 @@ int masterReplySyncRequest(client *c, syncResult *result) {
     } else if (result->action == SYNC_ACTION_CONTINUE) {
         char buf[128];
         int buflen;
-        buflen = snprintf(buf,sizeof(buf),"+CONTINUE %s %lld\r\n",
-                server.replid, result->offset-1);
+
+        serverLog(LL_NOTICE, "[%s] Partial sync request from %s accepted: %s, offset=%lld, limit=%lld, cc.replid=%s, cc.offset=%lld", replModeName(result->mode), replicationGetSlaveName(c), result->msg, result->offset, result->limit, result->cc.replid, result->cc.offset);
+
+        if (result->cc.offset < 0) {
+            buflen = snprintf(buf,sizeof(buf),"+CONTINUE %s\r\n",
+                    result->cc.replid);
+        } else {
+            buflen = snprintf(buf,sizeof(buf),"+CONTINUE %s %lld\r\n",
+                    result->cc.replid, result->cc.offset);
+        }
         masterSetupPartialSynchronization(c,result->offset,
                 result->limit,buf,buflen);
     } else {
-        serverLog(LL_NOTICE,
-                "[xsync] Partial sync request from %s rejected: %s",
-                replicationGetSlaveName(c), result->f.msg);
+        serverLog(LL_NOTICE, "[%s] Partial sync request from %s rejected: %s", replModeName(result->mode), replicationGetSlaveName(c), result->msg);
     }
 
     return ret;
@@ -1361,6 +1392,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                     serverLog(LL_NOTICE, "[xsync] gtid.set-slost(%s) = gtid.set-continue(%s) - gtid.set-slave(%s)", gtid_slost_repr,gtid_cont_repr,gtid_slave_repr);
 
                     gtidSetMerge(server.gtid_lost, gtid_slost);
+                    serverUpdateCurrentUuidSetNextGno("slave xcontinue");
                     gtid_updated_lost_repr = gtidSetDump(server.gtid_lost);
                     serverLog(LL_NOTICE, "[xsync] gtid.set-lost(%s) = gtid.set-lost(%s) + gtid.set-slost(%s)", gtid_updated_lost_repr,gtid_lost_repr,gtid_slost_repr);
 
@@ -1372,6 +1404,9 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                     sdsfree(gtid_cont_repr), sdsfree(gtid_lost_repr);
                     sdsfree(gtid_slave_repr), sdsfree(gtid_executed_repr);
                     sdsfree(gtid_slost_repr), sdsfree(gtid_updated_lost_repr);
+
+                    gtidSetFree(gtid_cont), gtidSetFree(gtid_slost);
+                    gtidSetFree(gtid_slave);
                 } else {
                     serverLog(LL_NOTICE,
                             "[xsync] Ignored xcontinue option: %s", tokens[i]);
@@ -1484,7 +1519,7 @@ void gtidxCommand(client *c) {
             "    List gtid.seq.",
             "SEQ GTID.SET",
             "    Get gtid.set of gtid seq index.",
-            "SEQ XSYNC <gtid.set>",
+            "SEQ LOCATE <gtid.set>",
             "    Locate xsync continue position",
             NULL
         };
@@ -1553,6 +1588,7 @@ void gtidxCommand(client *c) {
         if (getLongLongFromObjectOrReply(c, c->argv[5], &end_gno, NULL)
                 != C_OK) return;
         added = gtidSetAdd(gtid_set,uuid,sdslen(uuid),start_gno,end_gno);
+        serverUpdateCurrentUuidSetNextGno("gtidx add");
         sds gtid_repr = gtidSetDump(gtid_set);
         serverLog(LL_NOTICE,"Add gtid-%s %s %lld %lld result: %s",
                 (char*)c->argv[2]->ptr,uuid,start_gno,end_gno,gtid_repr);
@@ -1574,6 +1610,7 @@ void gtidxCommand(client *c) {
             gtidSetCurrentUuidSetUpdate(server.gtid_executed,server.uuid,
                     server.uuid_len);
         }
+        serverUpdateCurrentUuidSetNextGno("gtidx remove");
         sds gtid_repr = gtidSetDump(gtid_set);
         serverLog(LL_NOTICE,"Remove gtid-%s %s %lld %lld result: %s",
                 (char*)c->argv[2]->ptr,uuid,start_gno,end_gno,gtid_repr);
@@ -1589,7 +1626,7 @@ void gtidxCommand(client *c) {
             } else {
                 addReplyError(c, "gtid seq not exists");
             }
-        } else if (!strcasecmp(c->argv[2]->ptr,"xsync") && c->argc >= 4) {
+        } else if (!strcasecmp(c->argv[2]->ptr,"locate") && c->argc >= 4) {
             if (server.gtid_seq) {
                 long long blmaxlen = 128;
                 char *blbuf;

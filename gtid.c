@@ -568,6 +568,7 @@ gtidSet* gtidSetNew() {
     gtid_set->header = NULL;
     gtid_set->tail = NULL;
     gtid_set->current = NULL;
+    gtid_set->curnext = 0;
     return gtid_set;
 }
 
@@ -586,6 +587,7 @@ gtidSet* gtidSetDup(gtidSet *gtid_set) {
     gtidSet *result = gtid_malloc(sizeof(gtidSet));
     uuidSet *cur = gtid_set->header, *x = NULL, *p = NULL;
     result->current = NULL;
+    result->curnext = 0;
     result->header = NULL;
     while (cur) {
         x = uuidSetDup(cur);
@@ -616,7 +618,7 @@ gtidSet *gtidSetDecode(char* src, size_t len) {
     const char *split = ",";
     int uuid_str_start_index = 0;
     if (len == 0) return gtid_set;
-    for(int i = 0; i < len; i++) {
+    for(size_t i = 0; i < len; i++) {
         if(src[i] == split[0]) {
             uuid_set = uuidSetDecode(src+uuid_str_start_index,
                     i-uuid_str_start_index);

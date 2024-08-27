@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <assert.h>
 
 #define GTID_GNO_INITIAL        1
 
@@ -60,6 +61,7 @@ typedef struct uuidSet {
 } uuidSet;
 
 typedef struct gtidSet {
+    gno_t curnext; /* next gno for current if > 0 */
     struct uuidSet *current;
     struct uuidSet* header;
     struct uuidSet* tail;
@@ -112,7 +114,23 @@ uuidSet* gtidSetFind(gtidSet* gtid_set, const char* uuid, size_t uuid_len);
 /* Cache current uuid set to skip uuid compare. Note that it would crash
  * if current uuid set not cached or removed. */
 void gtidSetCurrentUuidSetUpdate(gtidSet *gtid_set, const char *uuid, size_t uuid_len);
-#define gtidSetCurrentUuidSetNext(gtid_set, update) uuidSetNext(gtid_set->current, update)
+static inline void gtidSetCurrentUuidSetSetNextGno(gtidSet *gtid_set, gno_t curnext) {
+  assert(gtid_set->current);
+  assert(uuidSetNext(gtid_set->current,0) <= curnext);
+  gtid_set->curnext = curnext;
+}
+static inline gno_t gtidSetCurrentUuidSetNext(gtidSet *gtid_set, int update) {
+  if (gtid_set->curnext == 0) {
+    return uuidSetNext(gtid_set->current, update);
+  } else {
+    gno_t curnext = gtid_set->curnext;
+    if (update) {
+      uuidSetAdd(gtid_set->current,curnext,curnext);
+      gtid_set->curnext = 0;
+    }
+    return curnext;
+  }
+}
 
 typedef uint16_t segoff_t;
 
