@@ -1433,14 +1433,23 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
 }
 
 sds genGtidInfoString(sds info) {
+    gtidSet *gtid_set;
     gtidStat executed_stat, lost_stat;
+
     gtidSetGetStat(server.gtid_executed, &executed_stat);
     gtidSetGetStat(server.gtid_lost, &lost_stat);
+
+    gtid_set = gtidSetDup(server.gtid_executed);
+    gtidSetMerge(gtid_set,server.gtid_lost);
+    sds gtid_set_repr = gtidSetDump(gtid_set);
+    gtidSetFree(gtid_set);
+
     sds gtid_executed_repr = gtidSetDump(server.gtid_executed);
     sds gtid_lost_repr = gtidSetDump(server.gtid_lost);
 
     info  = sdscatprintf(info,
             "gtid_uuid:%s\r\n"
+            "gtid_set:%s\r\n"
             "gtid_executed:%s\r\n"
             "gtid_executed_gno_count:%lld\r\n"
             "gtid_executed_used_memory:%lu\r\n"
@@ -1454,6 +1463,7 @@ sds genGtidInfoString(sds info) {
             "gtid_executed_cmd_count:%lld\r\n"
             "gtid_ignored_cmd_count:%lld\r\n",
             server.uuid,
+            gtid_set_repr,
             gtid_executed_repr,
             executed_stat.gno_count,
             executed_stat.used_memory,
@@ -1467,6 +1477,7 @@ sds genGtidInfoString(sds info) {
             server.gtid_executed_cmd_count,
             server.gtid_ignored_cmd_count);
 
+    sdsfree(gtid_set_repr);
     sdsfree(gtid_executed_repr);
     sdsfree(gtid_lost_repr);
 

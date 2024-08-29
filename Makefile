@@ -1,5 +1,5 @@
 STD=-std=c99
-OPT=-O0
+OPTIMIZATION?=-O2
 
 ifdef SANITIZER
 ifeq ($(SANITIZER),address)
@@ -13,7 +13,7 @@ endif
 endif
 endif
 
-FINAL_CFLAGS=$(STD) $(OPT) $(CFLAGS) -I./include -I./
+FINAL_CFLAGS=$(STD) $(OPTIMIZATION) $(CFLAGS) -I./include -I./
 
 CTRIP_CC=$(CC) $(FINAL_CFLAGS)
 XREDIS_GTID_LIB=lib/libgtid.a
@@ -40,6 +40,9 @@ bench:  $(XREDIS_GTID_LIB) ./gtid_bench.o
 	$(CTRIP_CC)  -g -ggdb  -o  gtid_bench  gtid_bench.o ./lib/libgtid.a -lm -ldl
 
 all: $(XREDIS_GTID_LIB)
+
+noopt:
+	$(MAKE) OPTIMIZATION="-O0"
 
 clean:
 	rm -rf $(XREDIS_GTID_LIB) $(XREDIS_GTID_OBJ) ./gtid_test.o ./gtid_bench.o
