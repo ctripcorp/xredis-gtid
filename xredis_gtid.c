@@ -369,6 +369,15 @@ void shiftServerReplMode(int mode, const char *msg) {
     }
     server.repl_mode->from = server.master_repl_offset+1;
     server.repl_mode->mode = mode;
+
+    /* Replication id is always binded to psync repliction stream: when
+     * replication mode changed from xsync to psync, replication id are
+     * cleared since we are starting a new history. */
+    if (mode == REPL_MODE_PSYNC) {
+        changeReplicationId();
+        clearReplicationId2();
+    }
+
     cur = dumpServerReplMode();
     serverLog(LL_NOTICE,"[gtid] shift repl mode to %s: %s => %s (%s)",
             replModeName(mode), prev, cur, msg);
@@ -710,6 +719,8 @@ typedef struct syncResult {
              * Note that to keep compatible with origin replication proptocol,
              * when offset < 0, it will not be propragte to slave. */
             long long offset;
+            /* gtid.set-lost might exists when xsync => psync. */
+            gtidSet *gtid_lost;
         } cc; /* continue */
     };
 } syncResult;
@@ -730,6 +741,7 @@ void syncResultFree(syncResult *result) {
         break;
     case SYNC_ACTION_CONTINUE:
         sdsfree(result->cc.replid);
+        gtidSetFree(result->cc.gtid_lost);
         break;
     case SYNC_ACTION_FULL:
         break;
@@ -926,6 +938,7 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
         result->cc.replid = sdsnew(server.replid);
         /* logically, offset (.. psync_offset-1] has already received */
         result->cc.offset = psync_offset-1;
+        result->cc.gtid_lost = gtid_mlost, gtid_mlost = NULL;
         result->msg = sdsnew("xsync => psync");
     } else {
         result->action = SYNC_ACTION_XCONTINUE;
@@ -934,7 +947,6 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
         result->msg = sdscatprintf(sdsempty(),
                 "gap=%lld <= maxgap=%lld",gap,maxgap);
     }
-
 
 end:
     syncLocateResultDeinit(&slr);
@@ -1045,11 +1057,10 @@ void masterSetupPartialSynchronization(client *c, long long offset,
         sent, offset);
 
     if (limit > 0) {
-        writeToClient(c,0);
+        c->flags |= CLIENT_CLOSE_AFTER_REPLY;
         serverLog(LL_NOTICE,
                 "[gtid] Disconnect slave %s to notify repl mode switched.",
                 replicationGetSlaveName(c));
-        freeClientAsync(c);
         return;
     }
 
@@ -1064,6 +1075,29 @@ void masterSetupPartialSynchronization(client *c, long long offset,
                           NULL);
 }
 
+static void serverUpdateGtidLost(gtidSet *delta_lost) {
+    sds gtid_lost_repr = NULL, gtid_delta_lost_repr = NULL,
+        gtid_updated_lost_repr = NULL;
+
+    gtid_lost_repr = gtidSetDump(server.gtid_lost);
+    gtid_delta_lost_repr = gtidSetDump(delta_lost);
+
+    gtidSetMerge(server.gtid_lost,delta_lost);
+    serverUpdateCurrentUuidSetNextGno("gtid.set-lost update");
+
+    gtid_updated_lost_repr = gtidSetDump(server.gtid_lost);
+    serverLog(LL_NOTICE, "[gtid] gtid.set-lost update: gtid.set-lost(%s) = gtid.set-lost(%s) + gtid.set-delta_lost(%s)", gtid_updated_lost_repr, gtid_lost_repr, gtid_delta_lost_repr);
+
+    if (gtidSetCount(delta_lost) && server.masterhost) {
+        serverLog(LL_NOTICE, "[gtid] reconnect with master to sync gtid.lost update");
+        if (server.master) freeClientAsync(server.master);
+        cancelReplicationHandshake(0);
+    }
+
+    sdsfree(gtid_lost_repr), sdsfree(gtid_delta_lost_repr);
+    sdsfree(gtid_updated_lost_repr);
+}
+
 int masterReplySyncRequest(client *c, syncResult *result) {
     int ret = result->action == SYNC_ACTION_FULL ? C_ERR : C_OK;
 
@@ -1073,27 +1107,12 @@ int masterReplySyncRequest(client *c, syncResult *result) {
     } else if (result->action == SYNC_ACTION_XCONTINUE) {
         char *buf;
         int buflen;
-        sds gtid_lost_repr = NULL, gtid_delta_lost_repr = NULL,
-            gtid_updated_lost_repr = NULL, gtid_cont_repr = NULL;
-
-        gtid_lost_repr = gtidSetDump(server.gtid_lost);
-        gtid_delta_lost_repr = gtidSetDump(result->xc.gtid_lost);
-
-        gtidSetMerge(server.gtid_lost,result->xc.gtid_lost);
-        serverUpdateCurrentUuidSetNextGno("master xcontinue");
-
-        gtid_updated_lost_repr = gtidSetDump(server.gtid_lost);
-        serverLog(LL_NOTICE, "[%s] gtid.set-lost(%s) = gtid.set-lost(%s) + gtid.set-delta_lost(%s)", replModeName(result->mode), gtid_updated_lost_repr, gtid_lost_repr, gtid_delta_lost_repr);
-
-        if (gtidSetCount(result->xc.gtid_lost) && server.masterhost) {
-            serverLog(LL_NOTICE, "[%s] reconnect with master to sync gtid.lost update", replModeName(result->mode));
-            if (server.master) freeClientAsync(server.master);
-            cancelReplicationHandshake(0);
-        }
-
-        gtid_cont_repr = gtidSetDump(result->xc.gtid_cont);
+        sds gtid_cont_repr = gtidSetDump(result->xc.gtid_cont);
 
         serverLog(LL_NOTICE, "[%s] Partial sync request from %s accepted: %s, offset=%lld, limit=%lld, gtid.set-cont=%s, master.sid=%s", replModeName(result->mode), replicationGetSlaveName(c), result->msg, result->offset, result->limit, gtid_cont_repr, server.uuid);
+
+        if (result->xc.gtid_lost && gtidSetCount(result->xc.gtid_lost))
+            serverUpdateGtidLost(result->xc.gtid_lost);
 
         buflen = sdslen(gtid_cont_repr)+256;
         buf = zcalloc(buflen);
@@ -1104,14 +1123,16 @@ int masterReplySyncRequest(client *c, syncResult *result) {
         masterSetupPartialSynchronization(c,result->offset,
                 result->limit,buf,buflen);
 
+        sdsfree(gtid_cont_repr);
         zfree(buf);
-        sdsfree(gtid_lost_repr), sdsfree(gtid_delta_lost_repr);
-        sdsfree(gtid_updated_lost_repr), sdsfree(gtid_cont_repr);
     } else if (result->action == SYNC_ACTION_CONTINUE) {
         char buf[128];
         int buflen;
 
         serverLog(LL_NOTICE, "[%s] Partial sync request from %s accepted: %s, offset=%lld, limit=%lld, cc.replid=%s, cc.offset=%lld", replModeName(result->mode), replicationGetSlaveName(c), result->msg, result->offset, result->limit, result->cc.replid, result->cc.offset);
+
+        if (result->cc.gtid_lost && gtidSetCount(result->cc.gtid_lost))
+            serverUpdateGtidLost(result->cc.gtid_lost);
 
         if (result->cc.offset < 0) {
             buflen = snprintf(buf,sizeof(buf),"+CONTINUE %s\r\n",
@@ -1152,8 +1173,9 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
     /* Explicitly clear master_replid/master_initial_offset to avoid any
      * further usage. Note that offset was intentionally set to 0 to avoid
      * flagging master client as CLIENT_PRE_PSYNC. */
+    memset(server.master_replid,'0',sizeof(server.master_replid));
+    server.master_replid[CONFIG_RUN_ID_SIZE] = '\0';
     server.master_initial_offset = 0;
-    memset(server.master_replid,0,CONFIG_RUN_ID_SIZE+1);
 
     snprintf(maxgap,sizeof(maxgap),"%lld",server.gtid_xsync_max_gap);
 
@@ -1331,10 +1353,22 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             replicationCreateMasterClient(conn,-1);
             ctrip_replicationMasterLinkUp();
 
+            shiftServerReplMode(REPL_MODE_PSYNC, "slave xsync=>continue");
+
+            /* Align replid and offset with master since in psync mode now. */
+            memcpy(server.replid,new,sizeof(server.replid));
+            if (server.master_repl_offset != offset) {
+                /* gtid_seq became invalid if master offset bumped. */
+                ctrip_freeReplicationBacklog();
+                serverLog(LL_NOTICE,
+                        "[xsync] master repl offset bumped from %lld to %lld",
+                        server.master_repl_offset, offset);
+            }
+            server.master_repl_offset = offset;
+
             serverLog(LL_NOTICE,
                 "[xsync] Disconnect subslaves to notify repl mode switched.");
             disconnectSlaves();
-            shiftServerReplMode(REPL_MODE_PSYNC, "slave xsync=>continue");
             sdsfree(reply);
             return PSYNC_CONTINUE;
         }
