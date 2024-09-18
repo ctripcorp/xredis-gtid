@@ -1075,7 +1075,28 @@ void masterSetupPartialSynchronization(client *c, long long offset,
                           NULL);
 }
 
-static void serverUpdateGtidLost(gtidSet *delta_lost) {
+/* See disconnectSlaves for more details */
+static void disconnectSlavesExcept(client *trigger) {
+    listIter li;
+    listNode *ln;
+    listRewind(server.slaves,&li);
+    while((ln = listNext(&li))) {
+        client *slave = (client *)ln->value;
+
+        /* except trigger client */
+        if (slave == trigger) continue;
+
+        writeToClient(slave,0);
+        if (clientHasPendingReplies(slave)) {
+            sds client_desc = catClientInfoString(sdsempty(), slave);
+            serverLog(LL_NOTICE, "Slave still have pending replies when disconnect: %s", client_desc);
+            sdsfree(client_desc);
+        }
+        freeClient((client*)ln->value);
+    }
+}
+
+static void serverUpdateGtidLost(gtidSet *delta_lost, client *trigger) {
     sds gtid_lost_repr = NULL, gtid_delta_lost_repr = NULL,
         gtid_updated_lost_repr = NULL;
 
@@ -1092,6 +1113,7 @@ static void serverUpdateGtidLost(gtidSet *delta_lost) {
         serverLog(LL_NOTICE, "[gtid] reconnect with master to sync gtid.lost update");
         if (server.master) freeClientAsync(server.master);
         cancelReplicationHandshake(0);
+        disconnectSlavesExcept(trigger);
     }
 
     sdsfree(gtid_lost_repr), sdsfree(gtid_delta_lost_repr);
@@ -1112,7 +1134,7 @@ int masterReplySyncRequest(client *c, syncResult *result) {
         serverLog(LL_NOTICE, "[%s] Partial sync request from %s accepted: %s, offset=%lld, limit=%lld, gtid.set-cont=%s, master.sid=%s", replModeName(result->mode), replicationGetSlaveName(c), result->msg, result->offset, result->limit, gtid_cont_repr, server.uuid);
 
         if (result->xc.gtid_lost && gtidSetCount(result->xc.gtid_lost))
-            serverUpdateGtidLost(result->xc.gtid_lost);
+            serverUpdateGtidLost(result->xc.gtid_lost, c);
 
         buflen = sdslen(gtid_cont_repr)+256;
         buf = zcalloc(buflen);
@@ -1132,7 +1154,7 @@ int masterReplySyncRequest(client *c, syncResult *result) {
         serverLog(LL_NOTICE, "[%s] Partial sync request from %s accepted: %s, offset=%lld, limit=%lld, cc.replid=%s, cc.offset=%lld", replModeName(result->mode), replicationGetSlaveName(c), result->msg, result->offset, result->limit, result->cc.replid, result->cc.offset);
 
         if (result->cc.gtid_lost && gtidSetCount(result->cc.gtid_lost))
-            serverUpdateGtidLost(result->cc.gtid_lost);
+            serverUpdateGtidLost(result->cc.gtid_lost, c);
 
         if (result->cc.offset < 0) {
             buflen = snprintf(buf,sizeof(buf),"+CONTINUE %s\r\n",
