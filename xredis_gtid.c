@@ -482,8 +482,11 @@ void ctrip_freeReplicationBacklog(void) {
 void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv,
         int argc, const char *uuid, size_t uuid_len, gno_t gno, long long offset) {
     int touch_index = uuid != NULL && gno >= GTID_GNO_INITIAL && server.gtid_seq
-        && server.masterhost == NULL;
-    if (touch_index) gtidSeqAppend(server.gtid_seq,uuid,uuid_len,gno,offset);
+        && server.masterhost == NULL && server.swap_draining_master == NULL;
+    if (touch_index) {
+        //serverLog(LL_NOTICE, "[xxx] seq feedslaves %s:%lld %lld",uuid,gno,offset);
+        gtidSeqAppend(server.gtid_seq,uuid,uuid_len,gno,offset);
+    }
     replicationFeedSlaves(slaves,dictid,argv,argc);
     if (touch_index) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
 }
@@ -491,7 +494,10 @@ void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv,
 void ctrip_replicationFeedSlavesFromMasterStream(list *slaves, char *buf,
         size_t buflen, const char *uuid, size_t uuid_len, gno_t gno, long long offset) {
     int touch_index = uuid != NULL && gno >= GTID_GNO_INITIAL && server.gtid_seq;
-    if (touch_index) gtidSeqAppend(server.gtid_seq,uuid,uuid_len,gno,offset);
+    if (touch_index) {
+        //serverLog(LL_NOTICE, "[xxx] seq frommaster %s:%lld %lld",uuid,gno,offset);
+        gtidSeqAppend(server.gtid_seq,uuid,uuid_len,gno,offset);
+    }
     replicationFeedSlavesFromMasterStream(slaves,buf,buflen);
     if (touch_index) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
 }
@@ -519,6 +525,24 @@ int ctrip_replicationSetupSlaveForFullResync(client *slave, long long offset) {
         }
     }
     return C_OK;
+}
+
+#define GTID_XSYNC_MAX_REPLY_SIZE (64*1024)
+
+/* XCONTINUE reply could exceed 256 byte. */
+char *ctrip_receiveSynchronousResponse(connection *conn) {
+    char *buf = zcalloc(GTID_XSYNC_MAX_REPLY_SIZE);
+    if (connSyncReadLine(conn,buf,GTID_XSYNC_MAX_REPLY_SIZE,
+                server.repl_syncio_timeout*1000) == -1)
+    {
+        zfree(buf);
+        return sdscatprintf(sdsempty(),"-Reading from master: %s",
+                strerror(errno));
+    }
+    server.repl_transfer_lastio = server.unixtime;
+    sds response = sdsnew(buf);
+    zfree(buf);
+    return response;
 }
 
 typedef struct syncRequest {
@@ -1035,6 +1059,8 @@ void masterSetupPartialSynchronization(client *c, long long offset,
         long long limit, char *buf, int buflen) {
     long long sent;
 
+    if (server.repl_backlog == NULL) ctrip_createReplicationBacklog();
+
     c->flags |= CLIENT_SLAVE;
     c->replstate = SLAVE_STATE_ONLINE;
     c->repl_ack_time = server.unixtime;
@@ -1082,20 +1108,18 @@ static void disconnectSlavesExcept(client *trigger) {
     listRewind(server.slaves,&li);
     while((ln = listNext(&li))) {
         client *slave = (client *)ln->value;
-
-        /* except trigger client */
         if (slave == trigger) continue;
-
+        sds client_desc = catClientInfoString(sdsempty(), slave);
+        serverLog(LL_NOTICE,"[gtid] Disconnect slave to notify gtid.set-lost update: %s", client_desc);
         writeToClient(slave,0);
-        if (clientHasPendingReplies(slave)) {
-            sds client_desc = catClientInfoString(sdsempty(), slave);
-            serverLog(LL_NOTICE, "Slave still have pending replies when disconnect: %s", client_desc);
-            sdsfree(client_desc);
-        }
-        freeClient((client*)ln->value);
+        if (clientHasPendingReplies(slave))
+            serverLog(LL_NOTICE, "[gtid] Slave still have pending replies when disconnect: %s", client_desc);
+        freeClient(slave);
+        sdsfree(client_desc);
     }
 }
 
+// TODO refactor: 与slave的断链放在同一个函数
 static void serverUpdateGtidLost(gtidSet *delta_lost, client *trigger) {
     sds gtid_lost_repr = NULL, gtid_delta_lost_repr = NULL,
         gtid_updated_lost_repr = NULL;
@@ -1109,11 +1133,16 @@ static void serverUpdateGtidLost(gtidSet *delta_lost, client *trigger) {
     gtid_updated_lost_repr = gtidSetDump(server.gtid_lost);
     serverLog(LL_NOTICE, "[gtid] gtid.set-lost update: gtid.set-lost(%s) = gtid.set-lost(%s) + gtid.set-delta_lost(%s)", gtid_updated_lost_repr, gtid_lost_repr, gtid_delta_lost_repr);
 
-    if (gtidSetCount(delta_lost) && server.masterhost) {
-        serverLog(LL_NOTICE, "[gtid] reconnect with master to sync gtid.lost update");
-        if (server.master) freeClientAsync(server.master);
-        cancelReplicationHandshake(0);
-        disconnectSlavesExcept(trigger);
+    if (gtidSetCount(delta_lost)) {
+        if (server.masterhost) {
+            serverLog(LL_NOTICE, "[gtid] reconnect with master to sync gtid.set-lost update");
+            if (server.master) freeClientAsync(server.master);
+            cancelReplicationHandshake(0);
+        }
+        if (listLength(server.slaves)) {
+            serverLog(LL_NOTICE, "[gtid] disconnect slaves to sync gtid.set-lost update");
+            disconnectSlavesExcept(trigger);
+        }
     }
 
     sdsfree(gtid_lost_repr), sdsfree(gtid_delta_lost_repr);
