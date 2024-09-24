@@ -10,15 +10,6 @@
 /* 43 = 21(long long) + 1(-) + 21(long long) */
 #define INTERVAL_ENCODE_MAX_LEN 43
 
-#define assert(e) do {							        \
-    if (!(e)) {				                            \
-        printf(						                    \
-                "%s:%d: Failed assertion: \"%s\"\n",	\
-                __FILE__, __LINE__, #e);				\
-        return 0;						                \
-    }								                    \
-} while (0)
-
 gtidIntervalNode *gtidIntervalNodeNew(int level, gno_t start, gno_t end);
 void gtidIntervalNodeFree(gtidIntervalNode* interval);
 ssize_t gtidIntervalEncode(char *buf, size_t maxlen, gno_t start, gno_t end);

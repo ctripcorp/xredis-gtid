@@ -59,7 +59,7 @@ int gtidIntervalDecode(char* interval_str, size_t len, gno_t *pstart,
         gno_t *pend) {
     const char *hyphen = "-";
     int index = -1;
-    for(int i = 0; i < len; i++) {
+    for(size_t i = 0; i < len; i++) {
         if(interval_str[i] == hyphen[0]) {
             index = i;
             break;
@@ -397,7 +397,7 @@ ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid,
 char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len) {
     const char *split = ":";
     int index = -1;
-    for(int i = 0; i < src_len; i++) {
+    for(size_t i = 0; i < src_len; i++) {
         if(src[i] == split[0]) {
             index = i;
             break;
@@ -976,8 +976,8 @@ void gtidSeqAppend(gtidSeq *seq, const char *uuid, size_t uuid_len,
     if(lastseg == NULL /* no previous segment */ ||
             lastseg->uuid_len != uuid_len /* uuid switch */ ||
             memcmp(lastseg->uuid, uuid, uuid_len) /* uuid switch */ ||
-            lastseg->base_gno + lastseg->ngno != gno /* gno gap */ ||
-            lastseg->base_offset + seq->segment_size <= offset) {
+            lastseg->base_gno + (gno_t)lastseg->ngno != gno /* gno gap */ ||
+            lastseg->base_offset + (long long)seq->segment_size <= offset) {
         lastseg = gtidSeqSwitchSegment(seq,uuid,uuid_len,gno,offset);
     }
 
