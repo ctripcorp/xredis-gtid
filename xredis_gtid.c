@@ -479,7 +479,17 @@ void ctrip_freeReplicationBacklog(void) {
     }
 }
 
-void ctrip_resetReplicationBacklog(void) {
+void resetServerReplIdOffset(char *replid, long long offset) {
+    memcpy(server.replid,replid,sizeof(server.replid));
+
+    if (server.master_repl_offset == offset) return;
+
+    serverLog(LL_NOTICE,
+            "[xsync] master repl offset bumped from %lld to %lld",
+            server.master_repl_offset, offset);
+
+    server.master_repl_offset = offset;
+
     /* See resizeReplicationBacklog for more details */
     if (server.repl_backlog != NULL) {
         zfree(server.repl_backlog);
@@ -488,10 +498,17 @@ void ctrip_resetReplicationBacklog(void) {
         server.repl_backlog_idx = 0;
         server.repl_backlog_off = server.master_repl_offset+1;
     }
+
+    /* gtid_seq became invalid if master offset bumped. */
     if (server.gtid_seq != NULL) {
         gtidSeqDestroy(server.gtid_seq);
         server.gtid_seq = gtidSeqCreate();
     }
+
+    resetServerReplMode(REPL_MODE_PSYNC,"reset replication id and offset");
+    // TODO FIXME dirty hack
+    server.prev_repl_mode->from = 1;
+    server.prev_repl_mode->mode = REPL_MODE_XSYNC;
 }
 
 void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv,
@@ -1422,15 +1439,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             shiftServerReplMode(REPL_MODE_PSYNC, "slave xsync=>continue");
 
             /* Align replid and offset with master since in psync mode now. */
-            memcpy(server.replid,new,sizeof(server.replid));
-            if (server.master_repl_offset != offset) {
-                /* gtid_seq became invalid if master offset bumped. */
-                ctrip_resetReplicationBacklog();
-                serverLog(LL_NOTICE,
-                        "[xsync] master repl offset bumped from %lld to %lld",
-                        server.master_repl_offset, offset);
-            }
-            server.master_repl_offset = offset;
+            resetServerReplIdOffset(new,offset);
 
             serverLog(LL_NOTICE,
                 "[xsync] Disconnect subslaves to notify repl mode switched.");
