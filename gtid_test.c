@@ -1,12 +1,11 @@
-#include "gtid.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "testhelp.h"
-#include "limits.h"
+#include <limits.h>
+#include "gtid.h"
 #include "gtid_malloc.h"
-#include "util.h"
+#include "gtid_util.h"
 
 /* 43 = 21(long long) + 1(-) + 21(long long) */
 #define INTERVAL_ENCODE_MAX_LEN 43
@@ -1531,6 +1530,21 @@ int test_gtidSeqPsync() {
 
     return 1;
 }
+
+int __failed_tests = 0;
+int __test_num = 0;
+#define test_cond(descr,_c) do { \
+    __test_num++; printf("%d - %s: ", __test_num, descr); \
+    if(_c) printf("PASSED\n"); else {printf("FAILED\n"); __failed_tests++;} \
+} while(0);
+#define test_report() do { \
+    printf("%d tests, %d passed, %d failed\n", __test_num, \
+                    __test_num-__failed_tests, __failed_tests); \
+    if (__failed_tests) { \
+        printf("=== WARNING === We have failed tests here...\n"); \
+        exit(1); \
+    } \
+} while(0);
 
 int test_api(void) {
     {

@@ -31,7 +31,7 @@
 #include <string.h>
 #include <limits.h>
 #include <assert.h>
-#include "util.h"
+#include "gtid_util.h"
 #include "gtid.h"
 
 #ifndef GTID_MALLOC_INCLUDE
