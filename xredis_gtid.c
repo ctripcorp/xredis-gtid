@@ -479,6 +479,21 @@ void ctrip_freeReplicationBacklog(void) {
     }
 }
 
+void ctrip_resetReplicationBacklog(void) {
+    /* See resizeReplicationBacklog for more details */
+    if (server.repl_backlog != NULL) {
+        zfree(server.repl_backlog);
+        server.repl_backlog = zmalloc(server.repl_backlog_size);
+        server.repl_backlog_histlen = 0;
+        server.repl_backlog_idx = 0;
+        server.repl_backlog_off = server.master_repl_offset+1;
+    }
+    if (server.gtid_seq != NULL) {
+        gtidSeqDestroy(server.gtid_seq);
+        server.gtid_seq = gtidSeqCreate();
+    }
+}
+
 void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv,
         int argc, const char *uuid, size_t uuid_len, gno_t gno, long long offset) {
     int touch_index = uuid != NULL && gno >= GTID_GNO_INITIAL && server.gtid_seq
@@ -1410,7 +1425,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             memcpy(server.replid,new,sizeof(server.replid));
             if (server.master_repl_offset != offset) {
                 /* gtid_seq became invalid if master offset bumped. */
-                ctrip_freeReplicationBacklog();
+                ctrip_resetReplicationBacklog();
                 serverLog(LL_NOTICE,
                         "[xsync] master repl offset bumped from %lld to %lld",
                         server.master_repl_offset, offset);
