@@ -394,7 +394,7 @@ ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid,
     return len;
 }
 
-char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len) {
+char* uuidGnoDecode(char* src, size_t src_len, long long* gno, size_t* uuid_len) {
     const char *split = ":";
     int index = -1;
     for(size_t i = 0; i < src_len; i++) {
@@ -405,7 +405,7 @@ char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len) {
     }
     if(index == -1) goto err;
     if(string2ll(src+index+1, src_len-index-1, gno) == 0) goto err;
-    *uuid_len = index;
+    *uuid_len = (size_t)index;
     return src;
 err:
     return NULL;
@@ -569,6 +569,7 @@ gtidSet* gtidSetNew() {
     gtid_set->tail = NULL;
     gtid_set->current = NULL;
     gtid_set->curnext = 0;
+    gtid_set->cached = NULL;
     return gtid_set;
 }
 
@@ -588,6 +589,7 @@ gtidSet* gtidSetDup(gtidSet *gtid_set) {
     uuidSet *cur = gtid_set->header, *x = NULL, *p = NULL;
     result->current = NULL;
     result->curnext = 0;
+    result->cached = NULL;
     result->header = NULL;
     while (cur) {
         x = uuidSetDup(cur);
@@ -685,11 +687,22 @@ uuidSet* gtidSetFind(gtidSet* gtid_set, const char* uuid, size_t uuid_len) {
 
 gno_t gtidSetAdd(gtidSet* gtid_set, const char* uuid, size_t uuid_len,
         gno_t start, gno_t end) {
-    uuidSet *cur = gtidSetFind(gtid_set, uuid, uuid_len);
+    uuidSet *cur = NULL;
+
+    if (gtid_set->cached &&
+            gtid_set->cached->uuid_len == uuid_len &&
+            memcmp(gtid_set->cached->uuid,uuid,uuid_len) == 0) {
+        /* Fast path: adding to cached uuidSet */
+        cur = gtid_set->cached;
+    } else {
+        cur = gtidSetFind(gtid_set, uuid, uuid_len);
+    }
+
     if (cur == NULL) {
         cur = uuidSetNew(uuid, uuid_len);
         gtidSetAppend(gtid_set, cur);
     }
+    gtid_set->cached = cur;
     return uuidSetAdd(cur, start, end);
 }
 
@@ -707,12 +720,14 @@ gno_t gtidSetRemove(gtidSet* gtid_set, const char *uuid, size_t uuid_len,
                 if (gtid_set->header == cur) gtid_set->header = cur->next;
                 if (gtid_set->tail == cur) gtid_set->tail = prev;
                 uuidSetFree(cur);
+                cur = NULL;
             }
             break;
         }
         prev = cur;
         cur = cur->next;
     }
+    gtid_set->cached = cur;
     return removed;
 }
 
@@ -748,6 +763,7 @@ gno_t gtidSetDiff(gtidSet* dst, gtidSet* src) {
             if (prev) prev->next = next;
             if (dst->header == cur) dst->header = next;
             if (dst->tail == cur) dst->tail = prev;
+            if (dst->cached == cur) dst->cached = NULL;
             uuidSetFree(cur);
         } else {
             prev = cur;
@@ -768,6 +784,7 @@ gno_t gtidSetNext(gtidSet* gtid_set, const char* uuid, size_t uuid_len,
             return GTID_GNO_INITIAL;
         }
     }
+    gtid_set->cached = uuid_set;
     return uuidSetNext(uuid_set,update);
 }
 
@@ -779,9 +796,10 @@ gno_t gtidSetCount(gtidSet *gtid_set) {
     return count;
 }
 
-int gitSetContains(gtidSet* gtid_set, const char* uuid, size_t uuid_len,
+int gtidSetContains(gtidSet* gtid_set, const char* uuid, size_t uuid_len,
         gno_t gno) {
     uuidSet *uuid_set = gtidSetFind(gtid_set, uuid, uuid_len);
+    gtid_set->cached = uuid_set;
     return uuid_set != NULL ? uuidSetContains(uuid_set,gno) : 0;
 }
 
@@ -809,6 +827,16 @@ int gtidSetEqual(gtidSet *set1, gtidSet *set2) {
     gtidSetFree(set);
 
     return count ? 0 : 1;
+}
+
+/* return 1 if set1 and set2 has common uuid */
+int gtidSetRelated(gtidSet *set1, gtidSet *set2) {
+    uuidSet *uuid_set = set2->header;
+    while (uuid_set) {
+        if (gtidSetFind(set1,uuid_set->uuid,uuid_set->uuid_len)) return 1;
+        uuid_set = uuid_set->next;
+    }
+    return 0;
 }
 
 void uuidSetGetStat(uuidSet *uuid_set, gtidStat *stat) {
@@ -1156,4 +1184,3 @@ void gtidSeqGetStat(gtidSeq *seq, gtidSeqStat *stat) {
         seq->nfreeseg_deltas*sizeof(segoff_t);
     stat->used_memory = stat->segment_memory + stat->freeseg_memory;
 }
-

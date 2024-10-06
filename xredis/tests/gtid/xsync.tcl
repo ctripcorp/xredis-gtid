@@ -214,7 +214,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
 
         assert_equal [$slave get hello] world_3
 
-        verify_log_message -1 "*Partial sync request from * accepted: before psync => xsync*" $orig_log_lines
+        verify_log_message -1 "*Partial sync request from * accepted: prior psync => xsync*" $orig_log_lines
         verify_log_message -1 "*Disconnect slave * to notify repl mode switched*" $orig_log_lines
         verify_log_message -1 "*Partial sync request from * accepted: psync => xsync*" $orig_log_lines
 
@@ -1106,7 +1106,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
 
             region_start_write_load A_info
 
-            after 1000
+            after 500
 
             # mock active failover
             region_setup_topo A_info master $A_master

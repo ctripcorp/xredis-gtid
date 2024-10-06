@@ -1,5 +1,3 @@
-# [functional testing]
-# stand-alone redis write aof file
 tags "aof" {
     set defaults { appendonly {yes} appendfilename {appendonly.aof} gtid-enabled yes}
     set server_path [tmpdir server.aof]
@@ -77,31 +75,31 @@ tags "aof" {
             assert_match [lindex $patterns $j] [lindex $s $j]
         }
     }
-    
+
     test "save aof and reload aof" {
         start_server_aof [list dir $server_path aof-load-truncated yes] {
             test "write expire command save to aof" {
                 set client [redis [dict get $srv host] [dict get $srv port] 0 $::tls]
                 $client set k1 v ex 1000
                 $client set k2 v px 2000
-                $client set k3 v 
+                $client set k3 v
                 $client expire k3 1000
-                $client set k4 v 
+                $client set k4 v
                 $client pexpire k4 2000
                 $client set k v
                 # $client bgrewriteaof
-                # waitForBgrewriteaof $client 
+                # waitForBgrewriteaof $client
                 set config [dict get $srv config]
                 set dir [dict get $config dir]
                 set res [try_read_aof  "$dir/appendonly.aof" 8]
                 assert_aof $res {
-                    {select *} 
-                    {gtid * 0 SET k1 v PXAT *} 
-                    {gtid * 0 SET k2 v PXAT *} 
-                    {gtid * 0 set k3 v} 
-                    {gtid * 0 PEXPIREAT k3 *} 
-                    {gtid * 0 set k4 v} 
-                    {gtid * 0 PEXPIREAT k4 *} 
+                    {select *}
+                    {gtid * 0 SET k1 v PXAT *}
+                    {gtid * 0 SET k2 v PXAT *}
+                    {gtid * 0 set k3 v}
+                    {gtid * 0 PEXPIREAT k3 *}
+                    {gtid * 0 set k4 v}
+                    {gtid * 0 PEXPIREAT k4 *}
                     {gtid * 0 set k v}
                 }
             }
@@ -113,13 +111,13 @@ tags "aof" {
                 set dir [dict get $config dir]
                 set res [try_read_aof  "$dir/appendonly.aof" 8]
                 assert_aof $res {
-                    {select *} 
-                    {gtid * 0 SET k1 v PXAT *} 
-                    {gtid * 0 SET k2 v PXAT *} 
-                    {gtid * 0 set k3 v} 
-                    {gtid * 0 PEXPIREAT k3 *} 
-                    {gtid * 0 set k4 v} 
-                    {gtid * 0 PEXPIREAT k4 *} 
+                    {select *}
+                    {gtid * 0 SET k1 v PXAT *}
+                    {gtid * 0 SET k2 v PXAT *}
+                    {gtid * 0 set k3 v}
+                    {gtid * 0 PEXPIREAT k3 *}
+                    {gtid * 0 set k4 v}
+                    {gtid * 0 PEXPIREAT k4 *}
                     {gtid * 0 set k v}
                 }
                 after 500
@@ -128,7 +126,6 @@ tags "aof" {
             }
         }
     }
-    
 
     create_aof {
         append_to_aof [formatCommand gtid A:1 0 set k1 y]
@@ -140,19 +137,18 @@ tags "aof" {
         test "Unfinished MULTI: Server should start if load-truncated is yes" {
             assert_equal 1 [is_alive $srv]
             set client [redis [dict get $srv host] [dict get $srv port] 0 $::tls]
-            assert_equal [$client get k1] y 
-            assert_equal [$client get k2] {} 
-        } 
-    } 
+            assert_equal [$client get k1] y
+            assert_equal [$client get k2] {}
+        }
+    }
 
-    
     start_server {overrides {appendonly {yes} appendfilename {appendonly.aof} gtid-enabled yes}} {
         test {Redis should not try to convert DEL into EXPIREAT for EXPIRE -1} {
             r setex k1 10 y
             r set k2 y
             r expire k2 1000
             r set k3 y ex 1000
-            r set k4 y 
+            r set k4 y
             r gtid A:1 9 expire k4 2000
             r gtid A:2 9 /*comment*/ expire k4 3000
             r set k5 y
@@ -172,5 +168,4 @@ tags "aof" {
             }
         }
     }
-    
 }

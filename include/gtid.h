@@ -61,8 +61,12 @@ typedef struct uuidSet {
 } uuidSet;
 
 typedef struct gtidSet {
-    gno_t curnext; /* next gno for current if > 0 */
+    /* next gno for current if > 0 */
+    gno_t curnext;
     struct uuidSet *current;
+    /* cache last accessed uuidset.
+     * last accessed uuid are most likey to be accessed again */
+    struct uuidSet *cached;
     struct uuidSet* header;
     struct uuidSet* tail;
 } gtidSet;
@@ -77,7 +81,7 @@ typedef struct gtidStat {
 const char *gtidAllocatorName();
 
 ssize_t uuidGnoEncode(char *buf, size_t maxlen, const char *uuid, size_t uuid_len, gno_t gno);
-char* uuidGnoDecode(char* src, size_t src_len, long long* gno, int* uuid_len);
+char* uuidGnoDecode(char* src, size_t src_len, long long* gno, size_t* uuid_len);
 
 uuidSet *uuidSetNew(const char* uuid, size_t uuid_len);
 void uuidSetFree(uuidSet* uuid_set);
@@ -106,10 +110,11 @@ gno_t gtidSetDiff(gtidSet* gtid_set, gtidSet* other);
 gno_t gtidSetNext(gtidSet* gtid_set, const char* uuid, size_t uuid_len, int upate);
 gno_t gtidSetCount(gtidSet *gtid_set);
 int gtidSetEqual(gtidSet *set1, gtidSet *set2);
-int gitSetContains(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
+int gtidSetContains(gtidSet* gtid_set, const char* uuid, size_t uuid_len, gno_t gno);
 size_t gtidSetEstimatedEncodeBufferSize(gtidSet* gtid_set);
 void gtidSetGetStat(gtidSet *gtid_set, gtidStat *stat);
 uuidSet* gtidSetFind(gtidSet* gtid_set, const char* uuid, size_t uuid_len);
+int gtidSetRelated(gtidSet *set1, gtidSet *set2);
 
 /* Cache current uuid set to skip uuid compare. Note that it would crash
  * if current uuid set not cached or removed. */
@@ -118,8 +123,10 @@ static inline void gtidSetCurrentUuidSetSetNextGno(gtidSet *gtid_set, gno_t curn
   assert(gtid_set->current);
   assert(uuidSetNext(gtid_set->current,0) <= curnext);
   gtid_set->curnext = curnext;
+  gtid_set->cached = gtid_set->current;
 }
 static inline gno_t gtidSetCurrentUuidSetNext(gtidSet *gtid_set, int update) {
+  gtid_set->cached = gtid_set->current;
   if (gtid_set->curnext == 0) {
     return uuidSetNext(gtid_set->current, update);
   } else {
