@@ -926,7 +926,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
             }
 
             set load_hanler [start_write_load $M_host $M_port 5]
-            after 1000
+            after 500
             $M config set gtid-enabled $gtid_enabled
             stop_write_load $load_hanler
             after 100
@@ -1164,7 +1164,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
             region_wait_for_sync $B_info
 
             region_start_write_load master_ri
-            after 1000
+            after 500
             region_stop_write_load $master_ri
 
             region_wait_for_gtid_sync $A_info
@@ -1212,7 +1212,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
             # before topo change
             region_start_write_load master_ri
             region_start_write_load dr_ri
-            after 1000 ; # wait write loader ready
+            after 500 ; # wait write loader ready
 
             # topo change
             region_setup_topo A_info $A_role $A_master
@@ -1225,7 +1225,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
             region_wait_for_sync $B_info
 
             # after topo change
-            after 1000
+            after 500
             region_stop_write_load $A_info
             region_stop_write_load $B_info
 
