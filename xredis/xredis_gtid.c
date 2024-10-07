@@ -1178,13 +1178,13 @@ void masterSetupPartialSynchronization(client *c, long long offset,
 }
 
 /* See disconnectSlaves for more details */
-static void disconnectSlavesExcept(client *trigger) {
+static void disconnectSlavesExcept(client *trigger_slave) {
     listIter li;
     listNode *ln;
     listRewind(server.slaves,&li);
     while((ln = listNext(&li))) {
         client *slave = (client *)ln->value;
-        if (slave == trigger) continue;
+        if (slave == trigger_slave) continue;
         sds client_desc = catClientInfoString(sdsempty(), slave);
         serverLog(LL_NOTICE,"[gtid] Disconnect slave to notify gtid.set-lost update: %s", client_desc);
         writeToClient(slave,0);
@@ -1195,8 +1195,10 @@ static void disconnectSlavesExcept(client *trigger) {
     }
 }
 
-static void serverUpdateGtidLost(gtidSet *delta_lost, client *trigger) {
+/* trigger_slave is NULL if server.gtid_lost update triggered by master. */
+static void serverUpdateGtidLost(gtidSet *delta_lost, client *trigger_slave) {
     sds gtid_lost_repr = NULL, gtid_delta_lost_repr = NULL, gtid_updated_lost_repr = NULL;
+    int from_master = trigger_slave == NULL;
 
     if (gtidSetCount(delta_lost) == 0) return;
 
@@ -1208,7 +1210,7 @@ static void serverUpdateGtidLost(gtidSet *delta_lost, client *trigger) {
     gtid_updated_lost_repr = gtidSetDump(server.gtid_lost);
     serverLog(LL_NOTICE, "[gtid] gtid.set-lost update: gtid.set-lost(%s) = gtid.set-lost(%s) + gtid.set-delta_lost(%s)", gtid_updated_lost_repr, gtid_lost_repr, gtid_delta_lost_repr);
 
-    if (server.masterhost) {
+    if (server.masterhost && !from_master) {
         serverLog(LL_NOTICE, "[gtid] reconnect with master to sync gtid.set-lost update");
         if (server.master) freeClientAsync(server.master);
         cancelReplicationHandshake(0);
@@ -1216,7 +1218,7 @@ static void serverUpdateGtidLost(gtidSet *delta_lost, client *trigger) {
 
     if (listLength(server.slaves)) {
         serverLog(LL_NOTICE, "[gtid] disconnect slaves to sync gtid.set-lost update");
-        disconnectSlavesExcept(trigger);
+        disconnectSlavesExcept(trigger_slave);
     }
 
     sdsfree(gtid_lost_repr), sdsfree(gtid_delta_lost_repr);
@@ -1364,7 +1366,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                     gtid_cont = gtidSetDecode(tokens[i+1],sdslen(tokens[i+1]));
                     if (gtid_cont == NULL) {
                         serverLog(LL_WARNING, "[xsync] Parsed invalid gtid.set-cont(%s)", tokens[i+1]);
-                        result = PSYNC_TRY_LATER;
+                        result = PSYNC_NOT_SUPPORTED;
                         break;
                     }
 
@@ -1373,7 +1375,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                         sds gtid_slave_repr = gtidSetDump(gtid_slave);
                         serverLog(LL_WARNING,"[xsync] master reply with xcontinue, but gtid.set-cont(%s) != gtid.set-slave(%s), try sync later.",gtid_slave_repr, tokens[i+1]);
                         sdsfree(gtid_slave_repr);
-                        result = PSYNC_TRY_LATER;
+                        result = PSYNC_NOT_SUPPORTED;
                     }
                     gtidSetFree(gtid_cont);
                     gtidSetFree(gtid_slave);
@@ -1442,7 +1444,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             } else {
                 serverLog(LL_WARNING,"[xsync] got invalid replid:%s", reply);
                 sdsfree(reply);
-                return PSYNC_TRY_LATER;
+                return PSYNC_NOT_SUPPORTED;
             }
 
             /* parse offset */
@@ -1454,7 +1456,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             if (string2ll(start,end-start,&offset) == 0) {
                 serverLog(LL_WARNING,"[xsync] got invalid offset:%s",reply);
                 sdsfree(reply);
-                return PSYNC_TRY_LATER;
+                return PSYNC_NOT_SUPPORTED;
             }
 
             /* Create master client with args specified in CONTINUE reply. */
@@ -1501,13 +1503,12 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                 if (!strncasecmp(tokens[i], "gtid.set", sdslen(tokens[i]))) {
                     gtidSet *gtid_cont = NULL, *gtid_slost = NULL,
                             *gtid_slave = NULL;
-                    sds gtid_cont_repr, gtid_slave_repr, gtid_lost_repr,
-                        gtid_slost_repr, gtid_updated_lost_repr;
+                    sds gtid_cont_repr, gtid_slave_repr, gtid_slost_repr;
 
                     gtid_cont = gtidSetDecode(tokens[i+1],sdslen(tokens[i+1]));
                     if (gtid_cont == NULL) {
-                        serverLog(LL_WARNING, "[xsync] invalid gtid.set-cont(%s), default gtid.set-cont to ()", tokens[i+1]);
-                        result = PSYNC_TRY_LATER;
+                        serverLog(LL_WARNING, "[xsync] invalid gtid.set-cont(%s)", tokens[i+1]);
+                        result = PSYNC_NOT_SUPPORTED;
                         break;
                     }
 
@@ -1521,19 +1522,9 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                     gtid_slost_repr = gtidSetDump(gtid_slost);
                     serverLog(LL_NOTICE, "[xsync] gtid.set-slost(%s) = gtid.set-continue(%s) - gtid.set-slave(%s)", gtid_slost_repr,gtid_cont_repr,gtid_slave_repr);
 
-                    gtid_lost_repr = gtidSetDump(server.gtid_lost);
-                    serverGtidSetAddLost(gtid_slost);
-                    gtid_updated_lost_repr = gtidSetDump(server.gtid_lost);
-                    serverLog(LL_NOTICE, "[xsync] gtid.set-lost(%s) = gtid.set-lost(%s) + gtid.set-slost(%s)", gtid_updated_lost_repr,gtid_lost_repr,gtid_slost_repr);
+                    serverUpdateGtidLost(gtid_slost,NULL);
 
-                    if (gtidSetCount(gtid_slost)) {
-                        serverLog(LL_NOTICE, "[xsync] Disconnect slaves to notify my gtid.lost updated.");
-                        disconnectSlaves();
-                    }
-
-                    sdsfree(gtid_cont_repr), sdsfree(gtid_slave_repr);
-                    sdsfree(gtid_lost_repr);
-                    sdsfree(gtid_slost_repr), sdsfree(gtid_updated_lost_repr);
+                    sdsfree(gtid_cont_repr), sdsfree(gtid_slave_repr), sdsfree(gtid_slost_repr);
 
                     gtidSetFree(gtid_cont), gtidSetFree(gtid_slost);
                     gtidSetFree(gtid_slave);
