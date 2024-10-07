@@ -1,5 +1,5 @@
 STD=-std=c99
-OPT=-O2
+OPTIMIZATION?=-O2
 
 ifdef SANITIZER
 ifeq ($(SANITIZER),address)
@@ -13,11 +13,11 @@ endif
 endif
 endif
 
-FINAL_CFLAGS=$(STD) $(OPT) $(CFLAGS) -I./include -I./
+FINAL_CFLAGS=$(STD) $(OPTIMIZATION) $(CFLAGS) -I./include -I./
 
 CTRIP_CC=$(CC) $(FINAL_CFLAGS)
-XREDIS_GTID_LIB=lib/libgtid.a
-XREDIS_GTID_OBJ=gtid.o util.o
+GTID_LIB=lib/libgtid.a
+GTID_OBJ=gtid.o gtid_util.o
 AR=ar
 ARFLAGS=rcu
 DEBUG=-g -ggdb
@@ -32,20 +32,23 @@ INSTALL=cp -rf
 	$(CTRIP_CC) $(DEBUG) -MMD -o $@ -c $<
 
 
-$(XREDIS_GTID_LIB): $(XREDIS_GTID_OBJ)
+$(GTID_LIB): $(GTID_OBJ)
 	@mkdir -p lib
-	$(AR) $(ARFLAGS) $(XREDIS_GTID_LIB) $(XREDIS_GTID_OBJ)
+	$(AR) $(ARFLAGS) $(GTID_LIB) $(GTID_OBJ)
 
-bench:  $(XREDIS_GTID_LIB) ./gtid_bench.o
+bench:  $(GTID_LIB) ./gtid_bench.o
 	$(CTRIP_CC)  -g -ggdb  -o  gtid_bench  gtid_bench.o ./lib/libgtid.a -lm -ldl
 
-all: $(XREDIS_GTID_LIB)
+all: $(GTID_LIB)
+
+noopt:
+	$(MAKE) OPTIMIZATION="-O0"
 
 clean:
-	rm -rf $(XREDIS_GTID_LIB) $(XREDIS_GTID_OBJ) ./gtid_test.o ./gtid_bench.o
+	rm -rf $(GTID_LIB) $(GTID_OBJ) gtid_test.o gtid_bench.o *.d
 	rm -rf gtid_test debug gtid_bench
 
-test:  $(XREDIS_GTID_LIB) ./gtid_test.o
+test:  $(GTID_LIB) ./gtid_test.o
 	$(CTRIP_CC)  -g -ggdb  -o  gtid_test  gtid_test.o ./lib/libgtid.a -lm -ldl
 	./gtid_test
 
