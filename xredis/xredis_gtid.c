@@ -507,6 +507,22 @@ void ctrip_freeReplicationBacklog(void) {
     }
 }
 
+void ctrip_resetReplicationBacklog(void) {
+    /* See resizeReplicationBacklog for more details */
+    if (server.repl_backlog != NULL) {
+        zfree(server.repl_backlog);
+        server.repl_backlog = zmalloc(server.repl_backlog_size);
+        server.repl_backlog_histlen = 0;
+        server.repl_backlog_idx = 0;
+        server.repl_backlog_off = server.master_repl_offset+1;
+    }
+    /* gtid_seq became invalid if master offset bumped. */
+    if (server.gtid_seq != NULL) {
+        gtidSeqDestroy(server.gtid_seq);
+        server.gtid_seq = gtidSeqCreate();
+    }
+}
+
 void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv,
         int argc, const char *uuid, size_t uuid_len, gno_t gno, long long offset) {
     int touch_index = uuid != NULL && gno >= GTID_GNO_INITIAL && server.gtid_seq
@@ -560,23 +576,15 @@ void resetReplStreamPsync(char *replid, long long offset, char *cause) {
             "[gtid] master repl offset bumped from %lld to %lld: %s",
             server.master_repl_offset, offset, msg);
     server.master_repl_offset = offset;
-    /* See resizeReplicationBacklog for more details */
-    if (server.repl_backlog != NULL) {
-        zfree(server.repl_backlog);
-        server.repl_backlog = zmalloc(server.repl_backlog_size);
-        server.repl_backlog_histlen = 0;
-        server.repl_backlog_idx = 0;
-        server.repl_backlog_off = server.master_repl_offset+1;
-    }
-    /* gtid_seq became invalid if master offset bumped. */
-    if (server.gtid_seq != NULL) {
-        gtidSeqDestroy(server.gtid_seq);
-        server.gtid_seq = gtidSeqCreate();
-    }
+
+    /* backlog became invalid when master repl offset bumped */
+    ctrip_resetReplicationBacklog();
+
     /* logically treat [1 ~ master_reploffset] as xsync */
     resetServerReplModeFrom(REPL_MODE_XSYNC,1,msg);
     shiftServerReplMode(REPL_MODE_PSYNC,msg);
 
+    replicationDiscardCachedMaster();
     serverLog(LL_NOTICE, "[gtid] Disconnect slaves to notify %s.", msg);
     disconnectSlaves();
 }
@@ -1360,7 +1368,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
         if (!strncmp(reply,"+XFULLRESYNC",12)) {
             /* PSYNC => XFULLRESYNC */
             serverLog(LL_NOTICE,
-                    "[gtid] repl mode switch: psync => xsync (xfullresync)");
+                    "[psync] repl mode switch: psync => xsync (xfullresync)");
             /* Repl mode will be reset on rdb loading */
             replicationDiscardCachedMaster();
             sdsfree(reply);
@@ -1371,7 +1379,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
         if (!strncmp(reply,"+XCONTINUE",10)) {
             /* PSYNC => XCONTINUE */
             serverLog(LL_NOTICE,
-                    "[gtid] repl mode switch: psync => xsync (xcontinue)");
+                    "[psync] repl mode switch: psync => xsync (xcontinue)");
 
             sds *tokens;
             size_t token_off = 10;
@@ -1388,15 +1396,16 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
 
                     gtid_cont = gtidSetDecode(tokens[i+1],sdslen(tokens[i+1]));
                     if (gtid_cont == NULL) {
-                        serverLog(LL_WARNING, "[xsync] Parsed invalid gtid.set-cont(%s)", tokens[i+1]);
+                        serverLog(LL_WARNING, "[psync] Parsed invalid gtid.set-cont(%s)", tokens[i+1]);
                         result = PSYNC_NOT_SUPPORTED;
                         break;
                     }
 
-                    gtid_slave = serverGtidSetGet("[xsync]");
+                    gtid_slave = serverGtidSetGet("[psync]");
                     if (!gtidSetEqual(gtid_slave,gtid_cont)) {
                         sds gtid_slave_repr = gtidSetDump(gtid_slave);
-                        serverLog(LL_WARNING,"[xsync] master reply with xcontinue, but gtid.set-cont(%s) != gtid.set-slave(%s), try sync later.",gtid_slave_repr, tokens[i+1]);
+                        serverLog(LL_WARNING,"[psync] master reply with xcontinue, but gtid.set-cont(%s) != gtid.set-slave(%s), fallback to fullresync.",gtid_slave_repr, tokens[i+1]);
+                        //TODO fallback to fullresync
                         sdsfree(gtid_slave_repr);
                         result = PSYNC_NOT_SUPPORTED;
                     }
@@ -1404,7 +1413,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                     gtidSetFree(gtid_slave);
                 } else {
                     serverLog(LL_NOTICE,
-                            "[xsync] Ignored xcontinue option: %s", tokens[i]);
+                            "[psync] Ignored xcontinue option: %s", tokens[i]);
                 }
             }
 
@@ -1437,7 +1446,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
         if (!strncmp(reply,"+FULLRESYNC",11)) {
             /* XSYNC => FULLRESYNC */
             serverLog(LL_NOTICE,
-                    "[gtid] repl mode switch: xsync => psync (fullresync)");
+                    "[xsync] repl mode switch: xsync => psync (fullresync)");
             /* Repl mode will be reset on rdb loading */
             server.gtid_sync_stat[GTID_SYNC_XSYNC_FULLRESYNC]++;
             return -1;
@@ -1446,7 +1455,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
         if (!strncmp(reply,"+CONTINUE",9)) {
             /* XSYNC => CONTINUE */
             serverLog(LL_NOTICE,
-                    "[gtid] repl mode switch: xsync => psync (continue)");
+                    "[xsync] repl mode switch: xsync => psync (continue)");
             serverAssert(!server.master && !server.cached_master);
 
             server.gtid_sync_stat[GTID_SYNC_XSYNC_CONTINUE]++;
