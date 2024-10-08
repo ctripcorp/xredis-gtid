@@ -381,42 +381,41 @@ sds dumpServerReplMode() {
             server.prev_repl_mode->from);
 }
 
-void resetServerReplMode(int mode, const char *msg) {
+void resetServerReplModeFrom(int mode, long long from, const char *msg) {
     sds prev, cur;
     prev = dumpServerReplMode();
     replModeInit(server.prev_repl_mode);
     server.repl_mode->mode = mode;
-    server.repl_mode->from = server.master_repl_offset+1;
+    server.repl_mode->from = from;
     cur = dumpServerReplMode();
     serverLog(LL_NOTICE,"[gtid] reset repl mode to %s: %s => %s (%s)",
             replModeName(mode), prev, cur, msg);
     sdsfree(prev), sdsfree(cur);
 }
 
-void shiftServerReplMode(int mode, const char *msg) {
+void resetServerReplMode(int mode, const char *msg) {
+    resetServerReplModeFrom(mode,server.master_repl_offset+1,msg);
+}
+
+void shiftServerReplModeFrom(int mode, long long from, const char *msg) {
     sds prev, cur;
-    serverAssert(mode != REPL_MODE_UNSET);
-    if (server.repl_mode->mode == mode) return;
+    serverAssert(mode != REPL_MODE_UNSET && server.repl_mode->mode != mode);
     prev = dumpServerReplMode();
-    if (server.repl_mode->from != server.master_repl_offset+1) {
+    if (server.repl_mode->from != from) {
         server.prev_repl_mode->from = server.repl_mode->from;
         server.prev_repl_mode->mode = server.repl_mode->mode;
     }
-    server.repl_mode->from = server.master_repl_offset+1;
+    server.repl_mode->from = from;
     server.repl_mode->mode = mode;
-
-    /* Replication id is always binded to psync repliction stream: when
-     * replication mode changed from xsync to psync, replication id are
-     * cleared since we are starting a new history. */
-    if (mode == REPL_MODE_PSYNC) {
-        changeReplicationId();
-        clearReplicationId2();
-    }
 
     cur = dumpServerReplMode();
     serverLog(LL_NOTICE,"[gtid] shift repl mode to %s: %s => %s (%s)",
             replModeName(mode), prev, cur, msg);
     sdsfree(prev), sdsfree(cur);
+}
+
+void shiftServerReplMode(int mode, const char *msg) {
+    shiftServerReplModeFrom(mode,server.master_repl_offset+1,msg);
 }
 
 #define GTID_AUX_REPL_MODE    "gtid-repl-mode"
@@ -525,17 +524,42 @@ void ctrip_replicationFeedSlavesFromMasterStream(list *slaves, char *buf,
     if (touch_index) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
 }
 
-void resetServerReplIdOffset(char *replid, long long offset) {
-    memcpy(server.replid,replid,sizeof(server.replid));
+void shiftReplStreamIfNeeded(int mode, int flags, char *cause) {
+    char msg[64];
+    int cur_mode = server.repl_mode->mode;
+    /* No need to shift if cur and next mode match. */
+    if (cur_mode == mode) return;
+    snprintf(msg,sizeof(msg),"shift repl stream %s => %s: %s",
+            replModeName(cur_mode), replModeName(mode), cause);
+    shiftServerReplMode(mode,msg);
+    if (mode == REPL_MODE_PSYNC) {
+        changeReplicationId();
+        clearReplicationId2();
+    }
+    if (flags & GTID_SHIFT_REPL_STREAM_DISCARD_CACHED_MASTER)
+        replicationDiscardCachedMaster();
+    if (flags & GTID_SHIFT_REPL_STREAM_NOTIFY_SLAVES) {
+        serverLog(LL_NOTICE, "[gtid] Disconnect slaves to notify: %s", msg);
+        disconnectSlaves();
+    }
+}
 
-    if (server.master_repl_offset == offset) return;
+void resetReplStreamPsync(char *replid, long long offset, char *cause) {
+    char msg[64];
+
+    memcpy(server.replid,replid,sizeof(server.replid));
+    snprintf(msg,sizeof(msg),"repl stream reset to psync: %s", cause);
+
+    if (server.master_repl_offset == offset) {
+        shiftReplStreamIfNeeded(REPL_MODE_PSYNC,
+                GTID_SHIFT_REPL_STREAM_FULL,msg);
+        return;
+    }
 
     serverLog(LL_NOTICE,
-            "[xsync] master repl offset bumped from %lld to %lld",
-            server.master_repl_offset, offset);
-
+            "[gtid] master repl offset bumped from %lld to %lld: %s",
+            server.master_repl_offset, offset, msg);
     server.master_repl_offset = offset;
-
     /* See resizeReplicationBacklog for more details */
     if (server.repl_backlog != NULL) {
         zfree(server.repl_backlog);
@@ -544,19 +568,18 @@ void resetServerReplIdOffset(char *replid, long long offset) {
         server.repl_backlog_idx = 0;
         server.repl_backlog_off = server.master_repl_offset+1;
     }
-
     /* gtid_seq became invalid if master offset bumped. */
     if (server.gtid_seq != NULL) {
         gtidSeqDestroy(server.gtid_seq);
         server.gtid_seq = gtidSeqCreate();
     }
+    /* logically treat [1 ~ master_reploffset] as xsync */
+    resetServerReplModeFrom(REPL_MODE_XSYNC,1,msg);
+    shiftServerReplMode(REPL_MODE_PSYNC,msg);
 
-    resetServerReplMode(REPL_MODE_PSYNC,"reset replication id and offset");
-    // TODO FIXME dirty hack
-    server.prev_repl_mode->from = 1;
-    server.prev_repl_mode->mode = REPL_MODE_XSYNC;
+    serverLog(LL_NOTICE, "[gtid] Disconnect slaves to notify %s.", msg);
+    disconnectSlaves();
 }
-
 
 int ctrip_replicationSetupSlaveForFullResync(client *slave, long long offset) {
     const char *xfullresync = "+XFULLRESYNC\r\n";
@@ -1386,9 +1409,8 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             }
 
             if (result == PSYNC_CONTINUE) {
-                replicationDiscardCachedMaster();
-                disconnectSlaves();
-                shiftServerReplMode(REPL_MODE_XSYNC, "slave psync=>xcontinue");
+                shiftReplStreamIfNeeded(REPL_MODE_XSYNC,
+                        GTID_SHIFT_REPL_STREAM_FULL,"slave psync=>xcontinue");
                 replicationCreateMasterClient(conn,-1);
                 ctrip_replicationMasterLinkUp();
                 if (server.repl_backlog == NULL)
@@ -1465,14 +1487,9 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             replicationCreateMasterClient(conn,-1);
             ctrip_replicationMasterLinkUp();
 
-            shiftServerReplMode(REPL_MODE_PSYNC, "slave xsync=>continue");
-
             /* Align replid and offset with master since in psync mode now. */
-            resetServerReplIdOffset(new,offset);
+            resetReplStreamPsync(new,offset,"slave xsync=>continue");
 
-            serverLog(LL_NOTICE,
-                "[xsync] Disconnect subslaves to notify repl mode switched.");
-            disconnectSlaves();
             sdsfree(reply);
             return PSYNC_CONTINUE;
         }
