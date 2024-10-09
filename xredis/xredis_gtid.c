@@ -4,6 +4,9 @@
 
 #define GTID_COMMAN_ARGC 3
 
+#define GTID_XSYNC_UUID_INTERESTED_DEFAULT      "*"
+#define GTID_XSYNC_UUID_INTERESTED_FULLRESYNC   "?"
+
 int isGtidExecCommand(client* c) {
     return c->cmd->proc == gtidCommand && c->argc > GTID_COMMAN_ARGC &&
         strcasecmp(c->argv[GTID_COMMAN_ARGC]->ptr, "exec") == 0;
@@ -390,6 +393,7 @@ void resetServerReplModeFrom(int mode, long long from, const char *msg) {
     cur = dumpServerReplMode();
     serverLog(LL_NOTICE,"[gtid] reset repl mode to %s: %s => %s (%s)",
             replModeName(mode), prev, cur, msg);
+    xsyncUuidInterestedInit();
     sdsfree(prev), sdsfree(cur);
 }
 
@@ -411,6 +415,7 @@ void shiftServerReplModeFrom(int mode, long long from, const char *msg) {
     cur = dumpServerReplMode();
     serverLog(LL_NOTICE,"[gtid] shift repl mode to %s: %s => %s (%s)",
             replModeName(mode), prev, cur, msg);
+    xsyncUuidInterestedInit();
     sdsfree(prev), sdsfree(cur);
 }
 
@@ -686,11 +691,17 @@ void masterParsePsyncRequest(syncRequest *request, robj *replid, robj *offset) {
     }
 }
 
-void masterParseXsyncRequest(syncRequest *request, robj *gtidset, int optargc,
+void masterParseXsyncRequest(syncRequest *request, robj *uuid, robj *gtidset, int optargc,
         robj **optargv) {
     long long maxgap;
     gtidSet *gtid_slave;
     sds gtid_repr = gtidset->ptr;
+
+    if (!strcmp(uuid->ptr,GTID_XSYNC_UUID_INTERESTED_FULLRESYNC)) {
+        request->mode = REPL_MODE_UNSET;
+        request->i.msg = sdsnew("fullresync requested");
+        return;
+    }
 
     if ((gtid_slave = gtidSetDecode(gtid_repr,sdslen(gtid_repr))) == NULL) {
         request->mode = REPL_MODE_UNSET;
@@ -734,7 +745,7 @@ syncRequest *masterParseSyncRequest(client *c) {
     if (!strcasecmp(mode,"psync")) {
         masterParsePsyncRequest(request,c->argv[1],c->argv[2]);
     } else if (!strcasecmp(mode,"xsync")) {
-        masterParseXsyncRequest(request,c->argv[2],c->argc-3,c->argv+3);
+        masterParseXsyncRequest(request,c->argv[1],c->argv[2],c->argc-3,c->argv+3);
     } else {
         request->mode = REPL_MODE_UNSET;
         request->i.msg = sdscatprintf(sdsempty(), "invalid repl mode: %s", mode);
@@ -1315,7 +1326,7 @@ int ctrip_masterTryPartialResynchronization(client *c) {
     return ret;
 }
 
-const char *xsyncUuidInterestedConsume(void);
+const char *xsyncUuidInterestedGet(void);
 
 int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
     gtidSet *gtid_slave = NULL;
@@ -1337,11 +1348,12 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
 
     gtid_slave = serverGtidSetGet("[xsync]");
     gtid_slave_repr = gtidSetDump(gtid_slave);
+    const char *uuid_interested = xsyncUuidInterestedGet();
 
     snprintf(maxgap,sizeof(maxgap),"%lld",server.gtid_xsync_max_gap);
-    serverLog(LL_NOTICE, "[xsync] Trying partial xsync with gtid.set=%s, maxgap=%s",gtid_slave_repr,maxgap);
+    serverLog(LL_NOTICE, "[xsync] Trying partial xsync with uuid_interested=%s, gtid.set=%s, maxgap=%s",uuid_interested,gtid_slave_repr,maxgap);
 
-    sds reply = sendCommand(conn,"XSYNC",xsyncUuidInterestedConsume(),
+    sds reply = sendCommand(conn,"XSYNC",uuid_interested,
             gtid_slave_repr,"MAXGAP",maxgap,NULL);
     if (reply != NULL) {
         serverLog(LL_WARNING,"[xsync] Unable to send XSYNC: %s", reply);
@@ -1583,7 +1595,23 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
     }
 }
 
-#define ERRORY_REPLY_WRONG_TYPE_PREFIX_LEN  10
+
+static inline int isWrongTypeErrorReply(const char *s, size_t len) {
+    const char *swaperrmsg = "Swap failed (code=-206)";
+    const char *wterrmsg = "WRONGTYPE";
+    size_t swaplen = 23, wtlen = 9;
+
+    if (len > 0 && s[0] == '-') {
+        s++;
+        len--;
+    }
+
+    if ( (len >= swaplen && !memcmp(s,swaperrmsg,swaplen)) ||
+            (len >= wtlen && !memcmp(s,wterrmsg,wtlen)) )
+        return 1;
+    else
+        return 0;
+}
 
 void ctrip_afterErrorReply(client *c, const char *s, size_t len) {
     afterErrorReply(c,s,len);
@@ -1591,33 +1619,27 @@ void ctrip_afterErrorReply(client *c, const char *s, size_t len) {
     /* Replica sending wrong type error to master indicates data
      * inconsistent, * force fullresync to fix it. */
     if (getClientType(c) == CLIENT_TYPE_MASTER &&
-        len >= ERRORY_REPLY_WRONG_TYPE_PREFIX_LEN &&
-        !memcmp(s,shared.wrongtypeerr->ptr,ERRORY_REPLY_WRONG_TYPE_PREFIX_LEN))
-    {
+            isWrongTypeErrorReply(s,len)) {
         server.gtid_xsync_fullresync_indicator++;
     }
 }
 
-#define GTID_XSYNC_UUID_INTERESTED_DEFAULT      "*"
-#define GTID_XSYNC_UUID_INTERESTED_FULLRESYNC   "?"
-
 /* Note: uuid interested is effective only once */
-void xsyncUuidInterestedSetup(const char *uuid) {
+void xsyncUuidInterestedSet(const char *uuid) {
     server.gtid_uuid_interested = uuid;
 }
 
-const char *xsyncUuidInterestedConsume(void) {
+const char *xsyncUuidInterestedGet(void) {
     const char *uuid_interested = server.gtid_uuid_interested;
-    server.gtid_uuid_interested = GTID_XSYNC_UUID_INTERESTED_DEFAULT;
     return uuid_interested;
 }
 
 void xsyncUuidInterestedInit() {
-    xsyncUuidInterestedSetup(GTID_XSYNC_UUID_INTERESTED_DEFAULT);
+    xsyncUuidInterestedSet(GTID_XSYNC_UUID_INTERESTED_DEFAULT);
 }
 
 void forceXsyncFullResync() {
-    xsyncUuidInterestedSetup(GTID_XSYNC_UUID_INTERESTED_FULLRESYNC);
+    xsyncUuidInterestedSet(GTID_XSYNC_UUID_INTERESTED_FULLRESYNC);
 }
 
 void forceXsyncFullResyncIfNeeded() {

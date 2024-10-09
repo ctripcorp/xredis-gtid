@@ -1,5 +1,93 @@
 start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
     start_server {overrides {gtid-enabled yes}} {
+    start_server {overrides {gtid-enabled yes}} {
+    set M [srv -2 client]
+    set M_host [srv -2 host]
+    set M_port [srv -2 port]
+    set S [srv -1 client]
+    set S_host [srv -1 host]
+    set S_port [srv -1 port]
+    set SS [srv 0 client]
+    set SS_host [srv 0 host]
+    set SS_port [srv 0 port]
+
+    test "fallback to fullresync on wrong type" {
+        $M hmset hello f1 v1 f2 v1
+
+        $SS replicaof $S_host $S_port
+        $S replicaof $M_host $M_port
+
+        wait_for_sync $S
+        wait_for_sync $SS
+        wait_for_gtid_sync $M $S
+        wait_for_gtid_sync $M $SS
+
+        assert_equal [$M hmget hello f1 f2] {v1 v1}
+        assert_equal [$S hmget hello f1 f2] {v1 v1}
+        assert_equal [$SS hmget hello f1 f2] {v1 v1}
+
+        $S replicaof no one
+
+        $S set hello world
+
+        wait_for_sync $SS
+        wait_for_gtid_sync $S $SS
+
+        # generate M S data inconsistent
+        assert_equal [$S get hello] world
+        assert_equal [$SS get hello] world
+        assert_equal [$M hmget hello f1 f2] {v1 v1}
+
+        $S replicaof $M_host $M_port
+
+        wait_for_sync $S
+        wait_for_sync $SS
+
+        wait_for_gtid_sync $M $S
+        wait_for_gtid_sync $M $SS
+
+        # partial resync accepted, M S data inconsistent remains
+        assert_equal [$S get hello] world
+        assert_equal [$SS get hello] world
+        assert_equal [$M hmget hello f1 f2] {v1 v1}
+
+        # we try multiple round to ensure M,S,SS consistent because
+        # fullresync are triggered in servercron, which means SS might
+        # force fullresync before S, and then psync with S. resulting
+        # that SS still inconsistent with M.
+        for {set i 1} {$i < 5} { incr i} {
+            # hmset will fail on slave because wrongtype error
+            $M hmset hello f1 v2 f2 v2
+
+            # wait for force fullresync on S & SS
+            after 1000
+
+            wait_for_sync $S
+            wait_for_sync $SS
+
+            # after fullresync, S SS is consistent with M
+            assert_equal [$M hmget hello f1 f2] {v2 v2}
+            assert_equal [$S hmget hello f1 f2] {v2 v2}
+
+            catch {$SS hmget hello f1 f2} result
+
+            puts "round-$i: $result"
+
+            if { $result eq {v2 v2} } {
+                break
+            } else {
+                assert_match "*WRONGTYPE*" $result
+            }
+        }
+
+        assert_equal [$SS hmget hello f1 f2] {v2 v2}
+    }
+}
+}
+}
+
+start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
+    start_server {overrides {gtid-enabled yes}} {
     set master [srv -1 client]
     set master_host [srv -1 host]
     set master_port [srv -1 port]
@@ -911,11 +999,6 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
 
         for {set i 0} {$i < 10} {incr i} {
             puts "chaos repl mode change: round - $i"
-            set msg "+++++ round $i +++++"
-            write_log_line -3 $msg
-            write_log_line -2 $msg
-            write_log_line -1 $msg
-            write_log_line  0 $msg
 
             if {[expr {$i % 2}] == 0} {
                 set gtid_enabled "yes"
