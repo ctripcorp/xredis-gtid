@@ -1315,6 +1315,8 @@ int ctrip_masterTryPartialResynchronization(client *c) {
     return ret;
 }
 
+const char *xsyncUuidInterestedConsume(void);
+
 int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
     gtidSet *gtid_slave = NULL;
     char maxgap[32];
@@ -1339,8 +1341,8 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
     snprintf(maxgap,sizeof(maxgap),"%lld",server.gtid_xsync_max_gap);
     serverLog(LL_NOTICE, "[xsync] Trying partial xsync with gtid.set=%s, maxgap=%s",gtid_slave_repr,maxgap);
 
-    sds reply = sendCommand(conn,"XSYNC","*",gtid_slave_repr,
-            "MAXGAP",maxgap,NULL);
+    sds reply = sendCommand(conn,"XSYNC",xsyncUuidInterestedConsume(),
+            gtid_slave_repr,"MAXGAP",maxgap,NULL);
     if (reply != NULL) {
         serverLog(LL_WARNING,"[xsync] Unable to send XSYNC: %s", reply);
         sdsfree(reply);
@@ -1397,17 +1399,16 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                     gtid_cont = gtidSetDecode(tokens[i+1],sdslen(tokens[i+1]));
                     if (gtid_cont == NULL) {
                         serverLog(LL_WARNING, "[psync] Parsed invalid gtid.set-cont(%s)", tokens[i+1]);
-                        result = PSYNC_NOT_SUPPORTED;
+                        result = PSYNC_TRY_LATER;
                         break;
                     }
 
                     gtid_slave = serverGtidSetGet("[psync]");
                     if (!gtidSetEqual(gtid_slave,gtid_cont)) {
                         sds gtid_slave_repr = gtidSetDump(gtid_slave);
-                        serverLog(LL_WARNING,"[psync] master reply with xcontinue, but gtid.set-cont(%s) != gtid.set-slave(%s), fallback to fullresync.",gtid_slave_repr, tokens[i+1]);
-                        //TODO fallback to fullresync
+                        serverLog(LL_WARNING,"[psync] master reply with xcontinue, but gtid.set-cont(%s) != gtid.set-slave(%s).",gtid_slave_repr, tokens[i+1]);
                         sdsfree(gtid_slave_repr);
-                        result = PSYNC_NOT_SUPPORTED;
+                        result = PSYNC_TRY_LATER;
                     }
                     gtidSetFree(gtid_cont);
                     gtidSetFree(gtid_slave);
@@ -1424,6 +1425,9 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                 ctrip_replicationMasterLinkUp();
                 if (server.repl_backlog == NULL)
                     ctrip_createReplicationBacklog();
+            } else {
+                serverLog(LL_WARNING, "[psync] Discard cached master to force fullresync");
+                replicationDiscardCachedMaster();
             }
 
             sdsfreesplitres(tokens,ntoken);
@@ -1579,6 +1583,70 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
     }
 }
 
+#define ERRORY_REPLY_WRONG_TYPE_PREFIX_LEN  10
+
+void ctrip_afterErrorReply(client *c, const char *s, size_t len) {
+    afterErrorReply(c,s,len);
+    if (server.repl_mode->mode != REPL_MODE_XSYNC) return;
+    /* Replica sending wrong type error to master indicates data
+     * inconsistent, * force fullresync to fix it. */
+    if (getClientType(c) == CLIENT_TYPE_MASTER &&
+        len >= ERRORY_REPLY_WRONG_TYPE_PREFIX_LEN &&
+        !memcmp(s,shared.wrongtypeerr->ptr,ERRORY_REPLY_WRONG_TYPE_PREFIX_LEN))
+    {
+        server.gtid_xsync_fullresync_indicator++;
+    }
+}
+
+#define GTID_XSYNC_UUID_INTERESTED_DEFAULT      "*"
+#define GTID_XSYNC_UUID_INTERESTED_FULLRESYNC   "?"
+
+/* Note: uuid interested is effective only once */
+void xsyncUuidInterestedSetup(const char *uuid) {
+    server.gtid_uuid_interested = uuid;
+}
+
+const char *xsyncUuidInterestedConsume(void) {
+    const char *uuid_interested = server.gtid_uuid_interested;
+    server.gtid_uuid_interested = GTID_XSYNC_UUID_INTERESTED_DEFAULT;
+    return uuid_interested;
+}
+
+void xsyncUuidInterestedInit() {
+    xsyncUuidInterestedSetup(GTID_XSYNC_UUID_INTERESTED_DEFAULT);
+}
+
+void forceXsyncFullResync() {
+    xsyncUuidInterestedSetup(GTID_XSYNC_UUID_INTERESTED_FULLRESYNC);
+}
+
+void forceXsyncFullResyncIfNeeded() {
+    static long long prev_xsync_fullresync_indicator;
+
+    serverAssert(server.repl_mode->mode == REPL_MODE_XSYNC);
+    serverAssert(prev_xsync_fullresync_indicator <=
+            server.gtid_xsync_fullresync_indicator);
+
+    if (prev_xsync_fullresync_indicator ==
+            server.gtid_xsync_fullresync_indicator) return;
+
+    serverLog(LL_WARNING,
+            "[gtid] Force xsync fullresync (indicator %lld => %lld)",
+            prev_xsync_fullresync_indicator,
+            server.gtid_xsync_fullresync_indicator);
+
+    prev_xsync_fullresync_indicator =
+        server.gtid_xsync_fullresync_indicator;
+
+    forceXsyncFullResync();
+    if (server.master) freeClient(server.master);
+    disconnectSlaves();
+}
+
+void xsyncReplicationCron() {
+    forceXsyncFullResyncIfNeeded();
+}
+
 sds genGtidInfoString(sds info) {
     gtidSet *gtid_set;
     gtidStat executed_stat, lost_stat;
@@ -1606,6 +1674,8 @@ sds genGtidInfoString(sds info) {
             "gtid_repl_from:%lld\r\n"
             "gtid_prev_repl_mode:%s\r\n"
             "gtid_prev_repl_from:%lld\r\n"
+            "gtid_uuid_interested:%s\r\n"
+            "gtid_xsync_fullresync_indicator:%lld\r\n"
             "gtid_executed_cmd_count:%lld\r\n"
             "gtid_ignored_cmd_count:%lld\r\n",
             server.uuid,
@@ -1620,6 +1690,8 @@ sds genGtidInfoString(sds info) {
             server.repl_mode->from,
             replModeName(server.prev_repl_mode->mode),
             server.prev_repl_mode->from,
+            server.gtid_uuid_interested,
+            server.gtid_xsync_fullresync_indicator,
             server.gtid_executed_cmd_count,
             server.gtid_ignored_cmd_count);
 
