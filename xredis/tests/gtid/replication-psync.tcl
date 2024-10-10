@@ -133,28 +133,25 @@ proc test_psync {descr duration backlog_size backlog_ttl delay cond mdl sdl reco
     }
 }
 
-# {no yes}
-# {disabled swapdb}
+foreach mdl {no yes} {
+    foreach sdl {disabled swapdb} {
+        test_psync {no reconnection, just sync} 6 1000000 3600 0 {
+        } $mdl $sdl 0
 
-foreach mdl {no} {
-    foreach sdl {disabled} {
-        # test_psync {no reconnection, just sync} 6 1000000 3600 0 {
-        # } $mdl $sdl 0
-
-        # test_psync {ok psync} 6 100000000 3600 0 {
-        # assert {[s -1 sync_partial_ok] > 0}
-        # } $mdl $sdl 1
+        test_psync {ok psync} 6 100000000 3600 0 {
+        assert {[s -1 sync_partial_ok] > 0}
+        } $mdl $sdl 1
 
         test_psync {no backlog} 6 100 3600 0.5 {
         assert {[s -1 sync_partial_ok] > 0}
         } $mdl $sdl 1
 
-        # test_psync {ok after delay} 3 100000000 3600 3 {
-        # assert {[s -1 sync_partial_ok] > 0}
-        # } $mdl $sdl 1
+        test_psync {ok after delay} 3 100000000 3600 3 {
+        assert {[s -1 sync_partial_ok] > 0}
+        } $mdl $sdl 1
 
-        # test_psync {backlog expired} 3 100000000 1 3 {
-        # assert {[s -1 sync_partial_ok] > 0}
-        # } $mdl $sdl 1
+        test_psync {backlog expired} 3 100000000 1 3 {
+        assert {[s -1 sync_partial_ok] > 0}
+        } $mdl $sdl 1
     }
 }

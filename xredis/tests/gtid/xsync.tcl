@@ -11,6 +11,58 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
     set SS_host [srv 0 host]
     set SS_port [srv 0 port]
 
+    test "master.uuid propagate to subslaves, slave_repl_offset replaced with master.next_gno" {
+        # trigger master to create repl backlog, so that M S master_repl_offset will differ
+        $S replicaof $M_host $M_port
+        wait_for_sync $S
+        $S replicaof no one
+
+        for {set i 0} {$i < 100} {incr i} {
+            $M set key-$i val-$i
+        }
+
+        $S replicaof $M_host $M_port
+
+        wait_for_sync $S
+        wait_for_gtid_sync $M $S
+
+        for {set i 0} {$i < 100} {incr i} {
+            $M set key-$i val-$i
+        }
+
+        $SS replicaof $S_host $S_port
+
+        wait_for_sync $SS
+        wait_for_gtid_sync $M $SS
+
+        assert { [status $M master_repl_offset] > [status $S gtid_psync_slave_repl_offset] }
+        assert { [status $S gtid_psync_slave_repl_offset] > [status $SS gtid_psync_slave_repl_offset] }
+
+        assert { [status $S slave_repl_offset] == [status $SS slave_repl_offset] }
+
+        assert_equal [status $M gtid_master_uuid] [status $S gtid_master_uuid]
+        assert_equal [status $M gtid_master_uuid] [status $SS gtid_master_uuid]
+
+        assert { [status $M gtid_uuid] != [status $S gtid_uuid] }
+        assert { [status $M gtid_uuid] != [status $SS gtid_uuid] }
+    }
+}
+}
+}
+
+start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
+    start_server {overrides {gtid-enabled yes}} {
+    start_server {overrides {gtid-enabled yes}} {
+    set M [srv -2 client]
+    set M_host [srv -2 host]
+    set M_port [srv -2 port]
+    set S [srv -1 client]
+    set S_host [srv -1 host]
+    set S_port [srv -1 port]
+    set SS [srv 0 client]
+    set SS_host [srv 0 host]
+    set SS_port [srv 0 port]
+
     test "fallback to fullresync on wrong type" {
         $M hmset hello f1 v1 f2 v1
 

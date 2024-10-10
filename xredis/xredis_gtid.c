@@ -423,14 +423,31 @@ void shiftServerReplMode(int mode, const char *msg) {
     shiftServerReplModeFrom(mode,server.master_repl_offset+1,msg);
 }
 
+const char *getMasterUuid(size_t *puuid_len) {
+    const char *uuid;
+    size_t uuid_len;
+    if (server.masterhost) {
+        uuid = server.master_uuid;
+        uuid_len = server.master_uuid_len;
+    } else {
+        uuid = server.uuid;
+        uuid_len = server.uuid_len;
+    }
+    if (puuid_len) *puuid_len = uuid_len;
+    return uuid;
+}
+
 #define GTID_AUX_REPL_MODE    "gtid-repl-mode"
 #define GTID_AUX_EXECUTED     "gtid-executed"
 #define GTID_AUX_LOST         "gtid-lost"
+#define GTID_AUX_MASTER_UUID  "gtid-master-uuid"
 
 int rdbSaveGtidInfoAuxFields(rio* rdb) {
     char *repl_mode = (char*)replModeName(server.repl_mode->mode);
     sds gtid_executed_repr = gtidSetDump(server.gtid_executed);
     sds gtid_lost_repr = gtidSetDump(server.gtid_lost);
+    size_t master_uuid_len;
+    const char *master_uuid = getMasterUuid(&master_uuid_len);
 
     if (rdbSaveAuxField(rdb, GTID_AUX_REPL_MODE, strlen(GTID_AUX_REPL_MODE),
                 repl_mode, strlen(repl_mode)) == 0) {
@@ -446,6 +463,12 @@ int rdbSaveGtidInfoAuxFields(rio* rdb) {
     if (rdbSaveAuxField(rdb, GTID_AUX_LOST,
                 strlen(GTID_AUX_LOST),
                 gtid_lost_repr, sdslen(gtid_lost_repr)) == -1) {
+        goto err;
+    }
+
+    if (rdbSaveAuxField(rdb, GTID_AUX_MASTER_UUID,
+                strlen(GTID_AUX_MASTER_UUID),
+                (void*)master_uuid, master_uuid_len) == -1) {
         goto err;
     }
 
@@ -481,6 +504,17 @@ int LoadGtidInfoAuxFields(robj* key, robj* val) {
         if (!(gtid_lost = gtidSetDecode(val->ptr, sdslen(val->ptr))))
             gtid_lost = gtidSetNew();
         serverGtidSetResetLost(gtid_lost);
+        return 1;
+    } else if (!strcasecmp(key->ptr, GTID_AUX_MASTER_UUID)) {
+        char *master_uuid = val->ptr;
+        size_t master_uuid_len = sdslen(val->ptr);
+        if (master_uuid_len == CONFIG_RUN_ID_SIZE) {
+            memcpy(server.master_uuid,val->ptr,CONFIG_RUN_ID_SIZE);
+            server.master_uuid[CONFIG_RUN_ID_SIZE] = 0;
+        } else {
+            serverLog(LL_WARNING, "[gtid] aux load %s size invalid(%s:%ld)",
+                    GTID_AUX_MASTER_UUID,master_uuid,master_uuid_len);
+        }
         return 1;
     }
     return 0;
@@ -1276,18 +1310,22 @@ int masterReplySyncRequest(client *c, syncResult *result) {
     } else if (result->action == SYNC_ACTION_XCONTINUE) {
         char *buf;
         int buflen;
+        const char *master_uuid;
+        size_t master_uuid_len;
         sds gtid_cont_repr = gtidSetDump(result->xc.gtid_cont);
 
-        serverLog(LL_NOTICE, "[%s] Partial sync request from %s accepted: %s, offset=%lld, limit=%lld, gtid.set-cont=%s, master.sid=%s", replModeName(result->request_mode), replicationGetSlaveName(c), result->msg, result->offset, result->limit, gtid_cont_repr, server.uuid);
+        serverLog(LL_NOTICE, "[%s] Partial sync request from %s accepted: %s, offset=%lld, limit=%lld, gtid.set-cont=%s, master.uuid=%s", replModeName(result->request_mode), replicationGetSlaveName(c), result->msg, result->offset, result->limit, gtid_cont_repr, server.uuid);
 
         if (result->xc.gtid_lost) serverUpdateGtidLost(result->xc.gtid_lost,c);
+
+        master_uuid = getMasterUuid(&master_uuid_len);
 
         buflen = sdslen(gtid_cont_repr)+256;
         buf = zcalloc(buflen);
         buflen = snprintf(buf,buflen,
-                "+XCONTINUE GTID.SET %.*s MASTER.SID %.*s\r\n",
+                "+XCONTINUE GTID.SET %.*s MASTER.UUID %.*s\r\n",
                 (int)sdslen(gtid_cont_repr),gtid_cont_repr,
-                (int)server.uuid_len,server.uuid);
+                (int)master_uuid_len,master_uuid);
         masterSetupPartialSynchronization(c,result->offset,
                 result->limit,buf,buflen);
 
@@ -1424,6 +1462,17 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                     }
                     gtidSetFree(gtid_cont);
                     gtidSetFree(gtid_slave);
+                } else if (!strncasecmp(tokens[i], "master.uuid", sdslen(tokens[i]))) {
+                    const char *master_uuid = tokens[i+1];
+                    size_t master_uuid_len = sdslen(tokens[i+1]);
+                    if (master_uuid_len != CONFIG_RUN_ID_SIZE) {
+                        serverLog(LL_WARNING, "[psync] Parsed invalid master.uuid(%s)", tokens[i+1]);
+                        result = PSYNC_TRY_LATER;
+                        break;
+                    }
+                    memcpy(server.master_uuid,master_uuid,CONFIG_RUN_ID_SIZE);
+                    server.master_uuid[CONFIG_RUN_ID_SIZE] = 0;
+                    server.master_uuid_len = master_uuid_len;
                 } else {
                     serverLog(LL_NOTICE,
                             "[psync] Ignored xcontinue option: %s", tokens[i]);
@@ -1570,6 +1619,17 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
 
                     gtidSetFree(gtid_cont), gtidSetFree(gtid_slost);
                     gtidSetFree(gtid_slave);
+                } else if (!strncasecmp(tokens[i], "master.uuid", sdslen(tokens[i]))) {
+                    const char *master_uuid = tokens[i+1];
+                    size_t master_uuid_len = sdslen(tokens[i+1]);
+                    if (master_uuid_len != CONFIG_RUN_ID_SIZE) {
+                        serverLog(LL_WARNING, "[psync] Parsed invalid master.uuid(%s)", tokens[i+1]);
+                        result = PSYNC_TRY_LATER;
+                        break;
+                    }
+                    memcpy(server.master_uuid,master_uuid,CONFIG_RUN_ID_SIZE);
+                    server.master_uuid[CONFIG_RUN_ID_SIZE] = 0;
+                    server.master_uuid_len = master_uuid_len;
                 } else {
                     serverLog(LL_NOTICE,
                             "[xsync] Ignored xcontinue option: %s", tokens[i]);
@@ -1669,6 +1729,36 @@ void xsyncReplicationCron() {
     forceXsyncFullResyncIfNeeded();
 }
 
+static long long getPsyncSlaveReplOff() {
+    long long slave_repl_offset;
+    if (server.master) {
+        slave_repl_offset = server.master->reploff;
+    } else if (server.cached_master) {
+        slave_repl_offset = server.cached_master->reploff;
+    } else {
+        slave_repl_offset = 1;
+    }
+    return slave_repl_offset;
+}
+
+/* In order to help sentinel choose the newest slave to failover
+ * we use applied master gno to mock slave_repl_offset, while
+ * the origin offset are exposed by gtid_psync_slave_repl_offset. */
+long long ctrip_getSlaveReplOff() {
+    long long slave_repl_offset;
+    if (server.repl_mode->mode == REPL_MODE_XSYNC) {
+        gtidSet *gtid_set;
+        size_t uuid_len;
+        const char *uuid = getMasterUuid(&uuid_len);
+        gtid_set = serverGtidSetGet(NULL);
+        slave_repl_offset = gtidSetNext(gtid_set,uuid,uuid_len,0);
+        gtidSetFree(gtid_set);
+    } else {
+        slave_repl_offset = getPsyncSlaveReplOff();
+    }
+    return slave_repl_offset;
+}
+
 sds genGtidInfoString(sds info) {
     gtidSet *gtid_set;
     gtidStat executed_stat, lost_stat;
@@ -1683,8 +1773,10 @@ sds genGtidInfoString(sds info) {
     sds gtid_executed_repr = gtidSetDump(server.gtid_executed);
     sds gtid_lost_repr = gtidSetDump(server.gtid_lost);
 
+    const char *master_uuid = getMasterUuid(NULL);
     info  = sdscatprintf(info,
             "gtid_uuid:%s\r\n"
+            "gtid_master_uuid:%s\r\n"
             "gtid_set:%s\r\n"
             "gtid_executed:%s\r\n"
             "gtid_executed_gno_count:%lld\r\n"
@@ -1698,9 +1790,11 @@ sds genGtidInfoString(sds info) {
             "gtid_prev_repl_from:%lld\r\n"
             "gtid_uuid_interested:%s\r\n"
             "gtid_xsync_fullresync_indicator:%lld\r\n"
+            "gtid_psync_slave_repl_offset:%lld\r\n"
             "gtid_executed_cmd_count:%lld\r\n"
             "gtid_ignored_cmd_count:%lld\r\n",
             server.uuid,
+            master_uuid,
             gtid_set_repr,
             gtid_executed_repr,
             executed_stat.gno_count,
@@ -1714,6 +1808,7 @@ sds genGtidInfoString(sds info) {
             server.prev_repl_mode->from,
             server.gtid_uuid_interested,
             server.gtid_xsync_fullresync_indicator,
+            getPsyncSlaveReplOff(),
             server.gtid_executed_cmd_count,
             server.gtid_ignored_cmd_count);
 
@@ -1772,6 +1867,8 @@ void gtidxCommand(client *c) {
             "    Get gtid.set of gtid seq index.",
             "SEQ LOCATE <gtid.set>",
             "    Locate xsync continue position",
+            "UUID-INTRESTED SET <*|?>",
+            "    SET uuid.interested to * or ?",
             NULL
         };
         addReplyHelp(c, help);
@@ -1922,6 +2019,20 @@ void gtidxCommand(client *c) {
                 gtidSetFree(gtid_seq);
             } else {
                 addReplyError(c, "gtid seq not exists");
+            }
+        } else {
+            addReplyError(c,"Syntax error");
+        }
+    } else if (!strcasecmp(c->argv[1]->ptr,"uuid-interested") && c->argc >= 3) {
+        if (!strcasecmp(c->argv[2]->ptr, "set") && c->argc == 4) {
+            if (!strcasecmp(c->argv[3]->ptr, GTID_XSYNC_UUID_INTERESTED_DEFAULT)){
+                xsyncUuidInterestedSet(GTID_XSYNC_UUID_INTERESTED_DEFAULT);
+                addReply(c,shared.ok);
+            } else if (!strcasecmp(c->argv[3]->ptr, GTID_XSYNC_UUID_INTERESTED_FULLRESYNC)) {
+                xsyncUuidInterestedSet(GTID_XSYNC_UUID_INTERESTED_FULLRESYNC);
+                addReply(c,shared.ok);
+            } else {
+                addReplyError(c,"Invalid uuid-interested");
             }
         } else {
             addReplyError(c,"Syntax error");
