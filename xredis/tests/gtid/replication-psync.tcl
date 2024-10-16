@@ -124,7 +124,7 @@ proc test_psync {descr duration backlog_size backlog_ttl delay cond mdl sdl reco
                         puts "Run diff -u against /tmp/repldump*.txt for more info"
                     }
                     assert_equal [r debug digest] [r -1 debug digest]
-                    assert_equal [gtid_cmp [get_gtid $slave] [get_gtid $master]] 1
+                    assert_equal [gtid_cmp [get_gtid $slave] [get_gtid $master]] 0
                 }
 
                 eval $cond

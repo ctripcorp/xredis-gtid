@@ -351,6 +351,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
 
         $slave replicaof $master_host $master_port
         wait_for_sync $slave
+        wait_for_gtid_sync $master $slave
 
         assert_equal [$slave get hello] world_3
 
@@ -623,6 +624,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
         assert_equal [$slave get hello] world
 
         $master config set gtid-enabled yes
+        after 100
         wait_for_sync $slave
 
         assert_equal [status $slave gtid_repl_mode] xsync
