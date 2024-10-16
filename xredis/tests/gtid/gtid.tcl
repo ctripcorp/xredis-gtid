@@ -217,6 +217,11 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
 
 start_server {tags {"gtid"} overrides {gtid-enabled no}} {
     set master_repl [attach_to_replication_stream]
+    if {$::swap_mode == "disk"} {
+        set orig_db 0
+    } else {
+        set orig_db 9
+    }
 
     start_server {overrides {gtid-enabled no}} {
         set master [srv -1 client]

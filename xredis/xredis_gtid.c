@@ -2055,25 +2055,29 @@ int gtidTest(int argc, char **argv, int accurate) {
         syncRequest *request = syncRequestNew();
         robj *optargv[2];
         robj *gtidset = createStringObject("A:1-100,B", 9);
+        robj *uuid_interested = createStringObject("*",1);
         optargv[0] = createStringObject("MAXGAP",6);
         optargv[1] = createStringObject("10000", 5);
-        masterParseXsyncRequest(request,gtidset,2,optargv);
+        masterParseXsyncRequest(request,uuid_interested,gtidset,2,optargv);
         test_assert(request->mode == REPL_MODE_XSYNC);
         test_assert(request->x.maxgap == 10000);
         test_assert(gtidSetCount(request->x.gtid_slave) == 100);
         decrRefCount(optargv[0]);
         decrRefCount(optargv[1]);
         decrRefCount(gtidset);
+        decrRefCount(uuid_interested);
         syncRequestFree(request);
     }
 
     TEST("gtid - parse invalid xsync request") {
         syncRequest *request = syncRequestNew();
         robj *gtidset = createStringObject("hello:world", 11);
-        masterParseXsyncRequest(request,gtidset,0,NULL);
+        robj *uuid_interested = createStringObject("*",1);
+        masterParseXsyncRequest(request,uuid_interested,gtidset,0,NULL);
         test_assert(request->mode == REPL_MODE_UNSET);
         test_assert(!strcmp(request->i.msg, "invalid gtid.set hello:world"));
         decrRefCount(gtidset);
+        decrRefCount(uuid_interested);
         syncRequestFree(request);
     }
 
@@ -2084,28 +2088,28 @@ int gtidTest(int argc, char **argv, int accurate) {
         server.prev_repl_mode->from = 1000, server.prev_repl_mode->mode = REPL_MODE_PSYNC;
         server.repl_mode->from = 2000, server.repl_mode->mode = REPL_MODE_XSYNC;
 
-        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,3000);
+        locateServerReplMode(REPL_MODE_XSYNC,3000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_CUR);
         test_assert(slr->locate_mode == REPL_MODE_XSYNC);
 
-        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,2000);
+        locateServerReplMode(REPL_MODE_XSYNC,2000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_CUR);
         test_assert(slr->locate_mode == REPL_MODE_XSYNC);
 
-        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,2000);
+        locateServerReplMode(REPL_MODE_PSYNC,2000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_SWITCH);
         test_assert(slr->locate_mode == REPL_MODE_XSYNC);
 
-        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,1000);
+        locateServerReplMode(REPL_MODE_XSYNC,1000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
         syncLocateResultDeinit(slr);
 
-        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,1000);
+        locateServerReplMode(REPL_MODE_PSYNC,1000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_PREV);
         test_assert(slr->locate_mode == REPL_MODE_PSYNC);
         test_assert(slr->p.limit == 1000);
 
-        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,500);
+        locateServerReplMode(REPL_MODE_XSYNC,500,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
         syncLocateResultDeinit(slr);
 
@@ -2113,28 +2117,28 @@ int gtidTest(int argc, char **argv, int accurate) {
         server.prev_repl_mode->from = 1000, server.prev_repl_mode->mode = REPL_MODE_XSYNC;
         server.repl_mode->from = 2000, server.repl_mode->mode = REPL_MODE_PSYNC;
 
-        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,3000);
+        locateServerReplMode(REPL_MODE_PSYNC,3000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_CUR);
         test_assert(slr->locate_mode == REPL_MODE_PSYNC);
 
-        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,2000);
+        locateServerReplMode(REPL_MODE_PSYNC,2000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_CUR);
         test_assert(slr->locate_mode == REPL_MODE_PSYNC);
 
-        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,2000);
+        locateServerReplMode(REPL_MODE_XSYNC,2000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_SWITCH);
         test_assert(slr->locate_mode == REPL_MODE_PSYNC);
 
-        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,1000);
+        locateServerReplMode(REPL_MODE_PSYNC,1000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
         syncLocateResultDeinit(slr);
 
-        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,1000);
+        locateServerReplMode(REPL_MODE_XSYNC,1000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_PREV);
         test_assert(slr->locate_mode == REPL_MODE_XSYNC);
         test_assert(slr->p.limit == 1000);
 
-        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,500);
+        locateServerReplMode(REPL_MODE_XSYNC,500,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
         syncLocateResultDeinit(slr);
 
@@ -2142,19 +2146,19 @@ int gtidTest(int argc, char **argv, int accurate) {
         server.prev_repl_mode->from = 1000, server.prev_repl_mode->mode = REPL_MODE_UNSET;
         server.repl_mode->from = 2000, server.repl_mode->mode = REPL_MODE_XSYNC;
 
-        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,3000);
+        locateServerReplMode(REPL_MODE_XSYNC,3000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_CUR);
         test_assert(slr->locate_mode == REPL_MODE_XSYNC);
 
-        masterLocateSyncRequest(slr,REPL_MODE_XSYNC,2000);
+        locateServerReplMode(REPL_MODE_XSYNC,2000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_CUR);
         test_assert(slr->locate_mode == REPL_MODE_XSYNC);
 
-        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,2000);
+        locateServerReplMode(REPL_MODE_PSYNC,2000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
         syncLocateResultDeinit(slr);
 
-        masterLocateSyncRequest(slr,REPL_MODE_PSYNC,1000);
+        locateServerReplMode(REPL_MODE_PSYNC,1000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
 
         syncLocateResultDeinit(slr);
