@@ -120,8 +120,6 @@ void gtidCommand(client *c) {
         server.gtid_ignored_cmd_count++;
         if (server.masterhost) {
             serverLog(LL_WARNING, "gtid command already execute, %s", args);
-            //TODO don't panic on GA
-            serverPanic("gtid command already executed, %s", args);
         }
         sdsfree(args);
         return;
