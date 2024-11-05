@@ -107,7 +107,7 @@ start_server {overrides {gtid-enabled yes}} {
             $R(0) HMSET myhash f1 v1 f2 v2
             $R(0) RPUSH mylist a b c 1 2 3
 
-            if {$::swap_mode == "disk"} {
+            if {$::swap} {
                 # list disabled untill 1.0.1
                 catch { wait_keyspace_cold $R(0) }
             }
