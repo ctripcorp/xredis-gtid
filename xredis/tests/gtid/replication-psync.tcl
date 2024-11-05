@@ -23,7 +23,7 @@ proc test_psync {descr duration backlog_size backlog_ttl delay cond mdl sdl reco
             $master config set repl-diskless-sync-delay 1
             $slave config set repl-diskless-load $sdl
 
-            if {$::swap_mode == "disk"} {
+            if {$::swap} {
                 set load_handle0 [start_bg_complex_data $master_host $master_port 0 100000]
             } else {
                 set load_handle0 [start_bg_complex_data $master_host $master_port 9 100000]
@@ -72,7 +72,7 @@ proc test_psync {descr duration backlog_size backlog_ttl delay cond mdl sdl reco
                     }
                 }
 
-                if {$::swap_mode == "disk"} {
+                if {$::swap} {
                     stop_bg_complex_data $load_handle0
                 } else {
                     stop_bg_complex_data $load_handle0
@@ -95,7 +95,7 @@ proc test_psync {descr duration backlog_size backlog_ttl delay cond mdl sdl reco
                     fail "Slave still not connected after some time"
                 }
 
-                if {$::swap_mode == "disk"} {
+                if {$::swap} {
                     wait_for_condition 1000 50 {
                         [gtid_cmp [get_gtid $slave] [get_gtid $master]]  == 0
                     } else {
