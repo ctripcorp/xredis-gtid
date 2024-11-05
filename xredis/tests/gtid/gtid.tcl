@@ -217,7 +217,7 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
 
 start_server {tags {"gtid"} overrides {gtid-enabled no}} {
     set master_repl [attach_to_replication_stream]
-    if {$::swap_mode == "disk"} {
+    if {$::swap} {
         set orig_db 0
     } else {
         set orig_db 9
@@ -411,7 +411,7 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
         r select 0
         r set k v
 
-        if {$::swap_mode == "disk"} {
+        if {$::swap} {
             assert_replication_stream $repl {
                 {select *}
                 {gtid * * set k v}
@@ -437,7 +437,7 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
         r exec
         r set k v1
 
-        if {$::swap_mode == "disk"} {
+        if {$::swap} {
             assert_replication_stream $repl {
                 {select *}
                 {multi}
