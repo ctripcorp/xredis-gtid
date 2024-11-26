@@ -214,7 +214,9 @@ void propagateArgsPrepareToFeed(propagateArgs *pargs) {
     }
 
     if (server.masterhost == NULL &&
+#ifdef ENABLE_SWAP
             server.swap_draining_master == NULL &&
+#endif
             pargs->orig_cmd->proc == gtidCommand) {
         gtid_repr = pargs->orig_argv[1]->ptr;
         uuid = uuidGnoDecode(gtid_repr,sdslen(gtid_repr),&gno,&uuid_len);
@@ -222,7 +224,9 @@ void propagateArgsPrepareToFeed(propagateArgs *pargs) {
 
     /* Rewrite args to gtid... if needed */
     if (server.masterhost != NULL ||
+#ifdef ENABLE_SWAP
             server.swap_draining_master != NULL ||
+#endif
             !server.gtid_enabled ||
             pargs->orig_cmd->proc == gtidCommand ||
             pargs->orig_cmd->proc == publishCommand ||
@@ -565,7 +569,10 @@ void ctrip_resetReplicationBacklog(void) {
 void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv,
         int argc, const char *uuid, size_t uuid_len, gno_t gno, long long offset) {
     int touch_index = uuid != NULL && gno >= GTID_GNO_INITIAL && server.gtid_seq
-        && server.masterhost == NULL && server.swap_draining_master == NULL;
+        && server.masterhost == NULL;
+#ifdef ENABLE_SWAP
+    touch_index = touch_index && server.swap_draining_master == NULL;
+#endif
     if (touch_index) gtidSeqAppend(server.gtid_seq,uuid,uuid_len,gno,offset);
     replicationFeedSlaves(slaves,dictid,argv,argc);
     if (touch_index) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
@@ -1161,7 +1168,7 @@ long long consumeReplicationBacklogLimited(long long offset, long long limit,
         server.repl_backlog_size;
     j = (j + skip) % server.repl_backlog_size;
     len = server.repl_backlog_histlen - skip;
-    len = MIN(len,limit); /* limit bytes to copy */
+    len = len < limit ? len : limit; /* limit bytes to copy */
     while(len) {
         long long thislen =
             ((server.repl_backlog_size - j) < len) ?
