@@ -814,6 +814,7 @@ void syncLocateResultInit(syncLocateResult *slr) {
 void syncLocateResultDeinit(syncLocateResult *slr) {
     if (slr->locate_type == LOCATE_TYPE_INVALID) {
         sdsfree(slr->i.msg);
+        slr->i.msg = NULL;
     }
 }
 
@@ -845,7 +846,7 @@ void locateServerReplMode(int request_mode, long long psync_offset,
             slr->locate_type = LOCATE_TYPE_SWITCH;
         }
     } else if (server.prev_repl_mode->mode == REPL_MODE_UNSET) {
-        slr->locate_mode = LOCATE_TYPE_INVALID;
+        slr->locate_type = LOCATE_TYPE_INVALID;
         slr->i.msg = sdscatprintf(sdsempty(),
                 "psync offset(%lld) < repl_mode.from(%lld)",
                 psync_offset,server.repl_mode->from);
@@ -1997,6 +1998,7 @@ void gtidxCommand(client *c) {
                     addReplyNull(c);
                 }
                 zfree(buf);
+                zfree(blbuf);
                 gtidSetFree(gtid_cont);
                 gtidSetFree(gtid_req);
             } else {
