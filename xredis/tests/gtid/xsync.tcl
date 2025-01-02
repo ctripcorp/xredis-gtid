@@ -1,3 +1,10 @@
+proc get_info_property {r section line property} {
+    set str [$r info $section]
+    if {[regexp ".*${line}:\[^\r\n\]*${property}=(\[^,\r\n\]*).*" $str match submatch]} {
+        set _ $submatch
+    }
+}
+
 start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
     start_server {overrides {gtid-enabled yes}} {
     start_server {overrides {gtid-enabled yes}} {
@@ -122,8 +129,6 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
             assert_equal [$S hmget hello f1 f2] {v2 v2}
 
             catch {$SS hmget hello f1 f2} result
-
-            puts "round-$i: $result"
 
             if { $result eq {v2 v2} } {
                 break
@@ -1206,12 +1211,19 @@ proc region_wait_for_sync {region_info} {
     wait_for_sync [dict get $region_info keeper client]
 }
 
-start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
-    start_server {overrides {gtid-enabled yes}} {
-    start_server {overrides {gtid-enabled yes}} {
-    start_server {overrides {gtid-enabled yes}} {
-    start_server {overrides {gtid-enabled yes}} {
-    start_server {overrides {gtid-enabled yes}} {
+proc my_write_log_lines {count msg} {
+    for {set i 0} {$i < $count} {incr i} {
+        set svr_idx [expr 0 - $i]
+        write_log_line $svr_idx $msg
+    }
+}
+
+start_server {tags {"xsync"} overrides {gtid-enabled yes gtid-xsync-max-gap 100000}} {
+    start_server {overrides {gtid-enabled yes gtid-xsync-max-gap 100000}} {
+    start_server {overrides {gtid-enabled yes gtid-xsync-max-gap 100000}} {
+    start_server {overrides {gtid-enabled yes gtid-xsync-max-gap 100000}} {
+    start_server {overrides {gtid-enabled yes gtid-xsync-max-gap 100000}} {
+    start_server {overrides {gtid-enabled yes gtid-xsync-max-gap 100000}} {
 
     set A_info [region_info_create [srv -5 client] [srv -4 client] [srv -3 client]]
     set B_info [region_info_create [srv -2 client] [srv -1 client] [srv  0 client]]
@@ -1234,6 +1246,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
 
         for {set i 0} {$i < 10} {incr i} {
             puts "xsync chaos: failover - round $i"
+            my_write_log_lines 6 "xsync chaos: failover - round $i: start"
 
             if {[expr {$i % 2}] == 0} {
                 set A_master "redis1"
@@ -1250,18 +1263,23 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
             after 100
             region_stop_write_load $A_info
 
+            region_wait_for_sync $A_info
+            region_wait_for_sync $B_info
+            wait_for_gtid_sync [dict get $A_info keeper client] [dict get $B_info keeper client]
             region_wait_for_gtid_sync $A_info
             region_wait_for_gtid_sync $B_info
-            wait_for_gtid_sync [dict get $A_info keeper client] [dict get $B_info keeper client]
 
             assert_equal [status [dict get $A_info redis1 client] sync_full] $orig_sync_full_redis1
             assert_equal [status [dict get $A_info redis2 client] sync_full] $orig_sync_full_redis2
+
+            my_write_log_lines 6 "xsync chaos: failover - round $i: end"
         }
     }
 
     test "xsync chaos: active dr" {
         for {set i 0} {$i < 10} {incr i} {
             puts "xsync chaos: active dr - round $i"
+            my_write_log_lines 6 "xsync chaos: active dr - round $i: start"
 
             if {[expr {$i % 4}] < 2} {
                 set master_name "redis1"
@@ -1312,12 +1330,15 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
             assert_equal [status [dict get $A_info redis2 client] sync_full] $orig_sync_full_A_redis2
             assert_equal [status [dict get $B_info redis1 client] sync_full] $orig_sync_full_B_redis1
             assert_equal [status [dict get $B_info redis2 client] sync_full] $orig_sync_full_B_redis2
+
+            my_write_log_lines 6 "xsync chaos: active dr - round $i: end"
         }
     }
 
     test "xsync chaos: passive dr" {
         for {set i 0} {$i < 10} {incr i} {
             puts "xsync chaos: passive dr - round $i"
+            my_write_log_lines 6 "xsync chaos: passive dr - round $i: start"
 
             if {[expr {$i % 4}] < 2} {
                 set master_name "redis1"
@@ -1353,9 +1374,9 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
 
             # topo change
             region_setup_topo A_info $A_role $A_master
-            after 100 ; # single client ops < 10000/0.1, parital sync accepted
+            after 100 ; # single client ops < 100000/0.1, parital sync accepted
             region_setup_topo B_info $B_role $B_master
-            after 100 ; # single client ops < 10000/0.1, parital sync accepted
+            after 100 ; # single client ops < 100000/0.1, parital sync accepted
             region_setup_dr $master_ri $dr_ri
 
             region_wait_for_sync $A_info
@@ -1374,6 +1395,8 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
             assert_equal [status [dict get $A_info redis2 client] sync_full] $orig_sync_full_A_redis2
             assert_equal [status [dict get $B_info redis1 client] sync_full] $orig_sync_full_B_redis1
             assert_equal [status [dict get $B_info redis2 client] sync_full] $orig_sync_full_B_redis2
+
+            my_write_log_lines 6 "xsync chaos: passive dr - round $i: end"
         }
     }
 

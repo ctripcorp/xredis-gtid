@@ -10,7 +10,7 @@
 # checked for consistency.
 proc test_psync {descr duration backlog_size backlog_ttl delay cond mdl sdl reconnect} {
     start_server {tags {"repl"} overrides {gtid-enabled yes}} {
-        start_server {overrides {gtid-enabled yes}} {
+        start_server {overrides {gtid-enabled yes gtid-xsync-max-gap 0}} {
 
             set master [srv -1 client]
             set master_host [srv -1 host]
@@ -82,7 +82,17 @@ proc test_psync {descr duration backlog_size backlog_ttl delay cond mdl sdl reco
 
                 # Wait for the slave to reach the "online"
                 # state from the POV of the master.
-                wait_slave_online $master 5000 100 {
+                set retry 5000
+                while {$retry} {
+                    set info [$master info]
+                    if {[string match {*slave0:*state=online*} $info]} {
+                        break
+                    } else {
+                        incr retry -1
+                        after 100
+                    }
+                }
+                if {$retry == 0} {
                     error "assertion:Slave not correctly synchronized"
                 }
 
@@ -143,7 +153,7 @@ foreach mdl {no yes} {
         } $mdl $sdl 1
 
         test_psync {no backlog} 6 100 3600 0.5 {
-        assert {[s -1 sync_partial_ok] > 0}
+        assert {[s -1 sync_partial_err] > 0}
         } $mdl $sdl 1
 
         test_psync {ok after delay} 3 100000000 3600 3 {
@@ -151,7 +161,7 @@ foreach mdl {no yes} {
         } $mdl $sdl 1
 
         test_psync {backlog expired} 3 100000000 1 3 {
-        assert {[s -1 sync_partial_ok] > 0}
+        assert {[s -1 sync_partial_err] > 0}
         } $mdl $sdl 1
     }
 }
