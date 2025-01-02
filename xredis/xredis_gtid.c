@@ -594,7 +594,9 @@ void shiftReplStreamIfNeeded(int mode, int flags, char *cause) {
     snprintf(msg,sizeof(msg),"shift repl stream %s => %s: %s",
             replModeName(cur_mode), replModeName(mode), cause);
     shiftServerReplMode(mode,msg);
-    if (mode == REPL_MODE_PSYNC) {
+    if (mode == REPL_MODE_PSYNC && server.masterhost == NULL) {
+        /* set slaveseldb to -1 so that repl stream will re-select db */
+        server.slaveseldb = -1;
         changeReplicationId();
         clearReplicationId2();
     }
@@ -607,10 +609,11 @@ void shiftReplStreamIfNeeded(int mode, int flags, char *cause) {
 }
 
 void resetReplStreamPsync(char *replid, long long offset, char *cause) {
-    char msg[64];
+    char msg[128];
 
     memcpy(server.replid,replid,sizeof(server.replid));
-    snprintf(msg,sizeof(msg),"repl stream reset to psync: %s", cause);
+    snprintf(msg,sizeof(msg),"repl stream reset to psync(%s:%lld): %s",
+            replid, offset, cause);
 
     if (server.master_repl_offset == offset) {
         shiftReplStreamIfNeeded(REPL_MODE_PSYNC,
