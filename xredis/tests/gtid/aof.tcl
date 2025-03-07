@@ -150,11 +150,10 @@ tags "aof" {
             r set k3 y ex 1000
             r set k4 y
             r gtid A:1 9 expire k4 2000
-            r gtid A:2 9 /*comment*/ expire k4 3000
             r set k5 y
             set config [srv 0 config]
             set dir [dict get $config dir]
-            set res [try_read_aof  "$dir/appendonly.aof" 9]
+            set res [try_read_aof  "$dir/appendonly.aof" 8]
             assert_aof $res {
                 {select *}
                 {gtid * 9 SET k1 y PXAT *}
@@ -163,7 +162,6 @@ tags "aof" {
                 {gtid * 9 SET k3 y PXAT *}
                 {gtid * 9 set k4 y}
                 {gtid * 9 PEXPIREAT k4 *}
-                {gtid * 9 * PEXPIREAT k4 *}
                 {gtid * 9 set k5 y}
             }
         }

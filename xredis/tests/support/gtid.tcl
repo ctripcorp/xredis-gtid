@@ -63,3 +63,21 @@ proc wait_for_gtid_sync {r1 r2} {
         fail "gtid didn't sync in time"
     }
 }
+
+proc repl_ack_off_aligned {master} {
+    set infostr [$master INFO REPLICATION]
+
+    set master_repl_offset [getInfoProperty $infostr master_repl_offset]
+
+    set aligned 1
+    set lines [split $infostr "\n"]
+    foreach line $lines {
+        if {[regexp {slave\d+:ip=.*,port=.*,state=.*,offset=(.*?),lag=.*} $infostr _ repl_ack_off]} {
+            if {$master_repl_offset != $repl_ack_off} {
+                set aligned 0
+            }
+        }
+    }
+
+    set _ $aligned
+}
