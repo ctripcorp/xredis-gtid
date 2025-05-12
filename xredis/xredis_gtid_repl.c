@@ -160,7 +160,7 @@ void masterParsePsyncRequest(syncRequest *request, robj *replid, robj *offset) {
 
 void masterParseXsyncRequest(syncRequest *request, robj *uuid, robj *gtidset,
         int optargc, robj **optargv) {
-    long long maxgap;
+    long long maxgap = 0;
     gtidSet *gtid_slave = NULL;
     sds gtid_repr = gtidset->ptr, msg = NULL;
 
@@ -655,6 +655,9 @@ int masterReplySyncRequest(client *c, syncResult *result) {
         const char *master_uuid;
         size_t master_uuid_len;
         sds gtid_cont_repr = gtidSetDump(result->xc.gtid_cont);
+
+        if (sdslen(gtid_cont_repr) == 0)
+            gtid_cont_repr = sdscat(gtid_cont_repr, "\"\"");
 
         serverLog(LL_NOTICE,
                 "[%s] Partial sync request from %s accepted: %s, "
