@@ -161,18 +161,18 @@ void shiftServerReplMode(int mode, const char *log_prefix) {
     long long from = server.master_repl_offset+1;
     serverAssert(repl_mode->mode != REPL_MODE_UNSET && repl_mode->mode != mode);
     prev = dumpServerReplMode();
-    if (repl_mode->from != from) {
-        prev_mode->from = repl_mode->from;
-        prev_mode->mode = repl_mode->mode;
-        if (mode == REPL_MODE_PSYNC) {
-            memcpy(prev_mode->xsync.replid,server.replid,sizeof(server.replid));
-            prev_mode->xsync.gtid_reploff_delta = server.gtid_reploff_delta;
-        } else {
-            memcpy(prev_mode->psync.replid,server.replid,sizeof(server.replid));
-            memcpy(prev_mode->psync.replid2,server.replid2,sizeof(server.replid2));
-            prev_mode->psync.second_replid_offset = server.second_replid_offset;
-        }
+
+    prev_mode->from = repl_mode->from;
+    prev_mode->mode = repl_mode->mode;
+    if (mode == REPL_MODE_PSYNC) {
+        memcpy(prev_mode->xsync.replid,server.replid,sizeof(server.replid));
+        prev_mode->xsync.gtid_reploff_delta = server.gtid_reploff_delta;
+    } else {
+        memcpy(prev_mode->psync.replid,server.replid,sizeof(server.replid));
+        memcpy(prev_mode->psync.replid2,server.replid2,sizeof(server.replid2));
+        prev_mode->psync.second_replid_offset = server.second_replid_offset;
     }
+
     repl_mode->from = from;
     repl_mode->mode = mode;
 

@@ -1391,6 +1391,25 @@ int gtidTest(int argc, char **argv, int accurate) {
         locateServerReplMode(REPL_MODE_PSYNC,1000,slr);
         test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
         syncLocateResultDeinit(slr);
+
+        /* {(psync:1000), (xsync:1000)}*/
+        server.prev_repl_mode->from = 1000, server.prev_repl_mode->mode = REPL_MODE_XSYNC;
+        server.repl_mode->from = 1000, server.repl_mode->mode = REPL_MODE_PSYNC;
+
+        syncLocateResultInit(slr);
+        locateServerReplMode(REPL_MODE_PSYNC,1000,slr);
+        test_assert(slr->locate_type == LOCATE_TYPE_CUR);
+        syncLocateResultDeinit(slr);
+
+        syncLocateResultInit(slr);
+        locateServerReplMode(REPL_MODE_XSYNC,1000,slr);
+        test_assert(slr->locate_type == LOCATE_TYPE_SWITCH);
+        syncLocateResultDeinit(slr);
+
+        syncLocateResultInit(slr);
+        locateServerReplMode(REPL_MODE_XSYNC,900,slr);
+        test_assert(slr->locate_type == LOCATE_TYPE_INVALID);
+        syncLocateResultDeinit(slr);
     }
 
     TEST("gtid - parse sync reply") {

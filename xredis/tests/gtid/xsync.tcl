@@ -7,6 +7,46 @@ proc get_info_property {r section line property} {
 
 start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
     start_server {overrides {gtid-enabled yes}} {
+    set M [srv -1 client]
+    set M_host [srv -1 host]
+    set M_port [srv -1 port]
+    set S [srv 0 client]
+    set S_host [srv 0 host]
+    set S_port [srv 0 port]
+
+    # master: | (X) set hello world | (P) | (X) |
+    # slave:  | (X) set hello world | (P) |
+    test "prev_repl_mode.from equals repl_mode.from" {
+        assert_equal [status $M gtid_repl_mode] xsync
+        assert_equal [status $S gtid_repl_mode] xsync
+
+        # trigger master to create repl backlog, so that M S master_repl_offset will differ
+        $S replicaof $M_host $M_port
+        wait_for_sync $S
+
+        $M set hello world
+
+        wait_for_sync $S
+        wait_for_gtid_sync $M $S
+
+        assert_equal [$S get hello] world
+
+        $M config set gtid-enabled no
+        after 100
+        wait_for_sync $S
+
+        $M config set gtid-enabled yes
+
+        $M set hello world_1
+        wait_for_sync $S
+
+        assert_equal [$S get hello] world_1
+    }
+}
+}
+
+start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
+    start_server {overrides {gtid-enabled yes}} {
     start_server {overrides {gtid-enabled yes}} {
     set M [srv -2 client]
     set M_host [srv -2 host]
