@@ -42,6 +42,7 @@ typedef struct _rio rio;
 /* Misc */
 int isGtidExecCommand(client *c);
 sds gtidSetDump(gtidSet *gtid_set);
+sds gtidSetQuoteIfEmpty(sds gtid_repr);
 gtidSet *serverGtidSetGet(char *log_prefix);
 int serverGtidSetContains(char *uuid, size_t uuid_len, gno_t gno);
 void serverGtidSetResetExecuted(gtidSet *gtid_executed);

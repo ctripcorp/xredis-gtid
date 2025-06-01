@@ -38,9 +38,9 @@ int replicationSetupSlaveForXFullResync(client *slave, long long offset) {
 
     repr = sdsnew("+XFULLRESYNC");
 
-    gtid_lost_repr = gtidSetDump(server.gtid_lost);
+    gtid_lost_repr = gtidSetQuoteIfEmpty(gtidSetDump(server.gtid_lost));
     repr = sdscat(repr," GTID.LOST ");
-    repr = sdscatrepr(repr,gtid_lost_repr,sdslen(gtid_lost_repr));
+    repr = sdscatlen(repr,gtid_lost_repr,sdslen(gtid_lost_repr));
 
     repr = sdscat(repr," MASTER.UUID ");
     repr = sdscatlen(repr,master_uuid,master_uuid_len);
@@ -654,10 +654,7 @@ int masterReplySyncRequest(client *c, syncResult *result) {
         int buflen;
         const char *master_uuid;
         size_t master_uuid_len;
-        sds gtid_cont_repr = gtidSetDump(result->xc.gtid_cont);
-
-        if (sdslen(gtid_cont_repr) == 0)
-            gtid_cont_repr = sdscat(gtid_cont_repr, "\"\"");
+        sds gtid_cont_repr = gtidSetQuoteIfEmpty(gtidSetDump(result->xc.gtid_cont));
 
         serverLog(LL_NOTICE,
                 "[%s] Partial sync request from %s accepted: %s, "
@@ -1118,6 +1115,9 @@ static parsedSyncReply *parseSyncReply(sds reply) {
 
 int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
     int result = PSYNC_BY_REDIS;
+
+    serverLog(LL_NOTICE, "[gtid] got sync reply: %s",reply);
+
     parsedSyncReply *parsed = parseSyncReply(reply);
 
     if (parsed->type == SYNC_REPLY_TRANSERR) goto by_redis;
