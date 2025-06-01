@@ -44,6 +44,11 @@ sds gtidSetDump(gtidSet *gtid_set) {
     return gtidrepr;
 }
 
+sds gtidSetQuoteIfEmpty(sds gtid_repr) {
+    if (sdslen(gtid_repr) == 0) return sdscat(gtid_repr, "\"\"");
+    else return gtid_repr;
+}
+
 gtidSet *serverGtidSetGet(char *log_prefix) {
     gtidSet *gtid_master = gtidSetDup(server.gtid_executed);
     gtidSetMerge(gtid_master,server.gtid_lost);
