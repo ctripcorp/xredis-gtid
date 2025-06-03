@@ -560,18 +560,18 @@ void gtidxCommand(client *c) {
         } else if (!strcasecmp(c->argv[2]->ptr,"gtid.set") && c->argc == 3) {
             if (server.gtid_seq) {
                 gtidSegment *seg;
-                gtidSet *gtid_seq = gtidSetNew();
+                gtidSet *gtid_set = gtidSetNew();
                 for (seg = server.gtid_seq->firstseg; seg != NULL;
                         seg = seg->next) {
-                    gtidSetAdd(gtid_seq,seg->uuid,seg->uuid_len,
+                    gtidSetAdd(gtid_set,seg->uuid,seg->uuid_len,
                             seg->base_gno+seg->tgno,seg->base_gno+seg->ngno-1);
                 }
-                size_t maxlen = gtidSetEstimatedEncodeBufferSize(gtid_seq);
+                size_t maxlen = gtidSetEstimatedEncodeBufferSize(gtid_set);
                 char *buf = zmalloc(maxlen);
-                size_t len = gtidSetEncode(buf,maxlen,gtid_seq);
+                size_t len = gtidSetEncode(buf,maxlen,gtid_set);
                 addReplyBulkCBuffer(c,buf,len);
                 zfree(buf);
-                gtidSetFree(gtid_seq);
+                gtidSetFree(gtid_set);
             } else {
                 addReplyError(c, "gtid seq not exists");
             }

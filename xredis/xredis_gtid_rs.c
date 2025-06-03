@@ -565,8 +565,29 @@ void serverReplStreamSwitchIfNeeded(int to_mode, int flags,
         serverReplStreamSwitch2Psync(replid,server.master_repl_offset,
                 flags,log_prefix);
     } else {
+        gtidSet *empty_gtid = gtidSetNew();
+
+        if (server.prev_repl_mode->mode == REPL_MODE_XSYNC) {
+            char uuid[CONFIG_RUN_ID_SIZE+1] = {0};
+
+            getRandomHexChars(uuid,CONFIG_RUN_ID_SIZE);
+
+            serverLog(LL_NOTICE, "[gtid] reset server.uuid from %s to %s",server.uuid,uuid);
+
+            memcpy(server.uuid,uuid,CONFIG_RUN_ID_SIZE+1);
+            server.uuid_len = CONFIG_RUN_ID_SIZE;
+
+            gtidSetCurrentUuidSetUpdate(server.gtid_executed,server.uuid,server.uuid_len);
+        }
+
+        serverLog(LL_NOTICE, "[gtid] reset gtid.set and index to empty");
+
+        sds master_uuid = sdsnewlen(server.uuid,server.uuid_len);
         serverReplStreamSwitch2Xsync(replid,server.master_repl_offset,
-                server.master_uuid,flags,log_prefix);
+                master_uuid,empty_gtid,empty_gtid,flags,log_prefix);
+        sdsfree(master_uuid);
+
+        gtidSetFree(empty_gtid);
     }
 }
 
@@ -620,7 +641,8 @@ void serverReplStreamSwitch2Psync(const char *replid, long long reploff,
  * - master gtid-enabled changed from no to yes
  * - slave(psync) promoted as master with gtid disabled */
 void serverReplStreamSwitch2Xsync(sds replid, long long reploff,
-        sds master_uuid, int flags, const char *log_prefix) {
+        sds master_uuid, gtidSet *gtid_executed, gtidSet *gtid_lost, int flags,
+        const char *log_prefix) {
     serverAssert(server.repl_mode->mode == REPL_MODE_PSYNC);
     serverAssert(server.gtid_reploff_delta == 0);
 
@@ -633,6 +655,16 @@ void serverReplStreamSwitch2Xsync(sds replid, long long reploff,
     xsyncUuidInterestedInit();
     ctrip_setMasterReploff(reploff);
     setMasterUuid(master_uuid,sdslen(master_uuid));
+
+    /* Discard previous xsync history so that slave in previous xsync state
+     * trying to xsync will fail because of gtid not related. */
+    serverGtidSetResetExecuted(gtidSetDup(gtid_executed));
+    serverGtidSetResetLost(gtidSetDup(gtid_lost));
+
+    if (server.gtid_seq != NULL) {
+        gtidSeqDestroy(server.gtid_seq);
+        server.gtid_seq = gtidSeqCreate();
+    }
 
     replicationDiscardCachedMaster();
 

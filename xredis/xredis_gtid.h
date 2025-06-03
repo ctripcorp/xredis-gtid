@@ -171,7 +171,7 @@ void gtidInitialInfoSetup(gtidInitialInfo *info, gtidSet *gtid_lost, sds master_
 void serverReplStreamMasterLinkBroken();
 void serverReplStreamResurrectCreate(connection *conn, int dbid, const char *replid, long long reploff);
 void serverReplStreamUpdateXsync(gtidSet *gtid_lost, client *trigger_slave, sds master_uuid, sds replid, long long reploff);
-void serverReplStreamSwitch2Xsync(sds replid, long long reploff, sds master_uuid, int flags, const char *log_prefix);
+void serverReplStreamSwitch2Xsync(sds replid, long long reploff, sds master_uuid, gtidSet *gtid_executed, gtidSet *gtid_lost, int flags, const char *log_prefix);
 void serverReplStreamSwitch2Psync(const char *replid, long long reploff, int flags, const char *log_prefix);
 void serverReplStreamSwitchIfNeeded(int to_mode, int flags, const char *log_prefix);
 void serverReplStreamReset2Xsync(sds replid, long long reploff, int repl_stream_db, sds master_uuid, gtidSet *gtid_executed, gtidSet *gtid_lost, int flags, const char *log_prefix);
