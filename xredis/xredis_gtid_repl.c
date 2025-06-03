@@ -785,6 +785,7 @@ typedef struct parsedSyncReply {
         } xfullresync;
         struct {
             gtidSet *gtid_cont;
+            gtidSet *gtid_lost; /* default to empty if no specified */
             sds master_uuid;
             sds replid;
             long long reploff;
@@ -822,6 +823,8 @@ void parsedSyncReplyFree(parsedSyncReply *parsed) {
     case SYNC_REPLY_XCONTINUE:
         gtidSetFree(parsed->xcontinue.gtid_cont);
         parsed->xcontinue.gtid_cont = NULL;
+        gtidSetFree(parsed->xcontinue.gtid_lost);
+        parsed->xcontinue.gtid_lost = NULL;
         sdsfree(parsed->xcontinue.master_uuid);
         parsed->xcontinue.master_uuid = NULL;
         sdsfree(parsed->xcontinue.replid);
@@ -997,13 +1000,13 @@ invalid:
     if (gtid_lost) gtidSetFree(gtid_lost);
 }
 
-/* +XCONTINUE GTID.SET <gtid.set-continue> MASTER.UUID <master-uuid>
- * REPLID <replid> REPLOFF <reploff> */
+/* +XCONTINUE GTID.SET <gtid.set-continue> [GTID.LOST <gtid.set-lost>]
+ * MASTER.UUID <master-uuid> REPLID <replid> REPLOFF <reploff> */
 static void parseSyncReplyXcontinue(sds reply, parsedSyncReply *parsed) {
     sds *tokens, errmsg = NULL, replid = NULL, master_uuid = NULL;
     size_t token_off = 10;
     int i, ntoken;
-    gtidSet *gtid_cont = NULL;
+    gtidSet *gtid_cont = NULL, *gtid_lost = NULL;
     long long reploff = -1;
 
     while (token_off < sdslen(reply) && isspace(reply[token_off]))
@@ -1016,6 +1019,13 @@ static void parseSyncReplyXcontinue(sds reply, parsedSyncReply *parsed) {
             gtid_cont = gtidSetDecode(tokens[i+1],sdslen(tokens[i+1]));
             if (gtid_cont == NULL) {
                 errmsg = sdscatprintf(sdsempty(),"invalid gtid.set-cont(%s)",
+                        tokens[i+1]);
+                goto invalid;
+            }
+        } else if (!strncasecmp(tokens[i], "gtid.lost", sdslen(tokens[i]))) {
+            gtid_lost = gtidSetDecode(tokens[i+1],sdslen(tokens[i+1]));
+            if (gtid_lost == NULL) {
+                errmsg = sdscatprintf(sdsempty(),"invalid gtid.set-lost(%s)",
                         tokens[i+1]);
                 goto invalid;
             }
@@ -1064,6 +1074,12 @@ static void parseSyncReplyXcontinue(sds reply, parsedSyncReply *parsed) {
     parsed->type = SYNC_REPLY_XCONTINUE;
     parsed->xcontinue.master_uuid = master_uuid;
     parsed->xcontinue.gtid_cont = gtid_cont;
+    if (gtid_lost == NULL) {
+        parsed->xcontinue.gtid_lost = gtidSetNew();
+    } else {
+        parsed->xcontinue.gtid_lost = gtid_lost;
+        gtid_lost = NULL;
+    }
     parsed->xcontinue.replid = replid;
     parsed->xcontinue.reploff = reploff;
 
@@ -1078,6 +1094,7 @@ invalid:
     if (replid) sdsfree(replid);
     if (master_uuid) sdsfree(master_uuid);
     if (gtid_cont) gtidSetFree(gtid_cont);
+    if (gtid_lost) gtidSetFree(gtid_lost);
 }
 
 /* Move parsed xfullresync reply to server.gtid_initial */
@@ -1145,28 +1162,41 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             server.gtid_sync_stat[GTID_SYNC_PSYNC_XCONTINUE]++;
             serverLog(LL_NOTICE,
                     "[psync] repl mode switch: psync => xsync (xcontinue)");
-            gtidSet *gtid_slave = serverGtidSetGet("[psync]");
-            if (!gtidSetEqual(gtid_slave,parsed->xcontinue.gtid_cont)) {
-                sds gtid_slave_repr = gtidSetDump(gtid_slave);
-                sds gtid_cont_repr = gtidSetDump(parsed->xcontinue.gtid_cont);
-                serverLog(LL_WARNING,"[psync] master reply with xcontinue, "
-                        "but gtid.set-cont(%s) != gtid.set-slave(%s):"
-                        " fallback to fullresync.",
-                        gtid_cont_repr,gtid_slave_repr);
-                sdsfree(gtid_slave_repr);
-                sdsfree(gtid_cont_repr);
-                serverReplStreamMasterLinkBroken();
-                result = PSYNC_TRY_LATER;
-            } else {
-                serverReplStreamSwitch2Xsync(
-                        parsed->xcontinue.replid,parsed->xcontinue.reploff,
-                        parsed->xcontinue.master_uuid,RS_UPDATE_DOWN,
-                        "slave psync=>xcontinue");
-                serverReplStreamResurrectCreate(conn,-1,
-                        parsed->xcontinue.replid,parsed->xcontinue.reploff);
-                result = PSYNC_CONTINUE;
-            }
-            gtidSetFree(gtid_slave);
+
+            /* align gtid.set with master */
+            gtidSet *reply_executed = gtidSetDup(parsed->xcontinue.gtid_cont);
+            gtidSetDiff(reply_executed,parsed->xcontinue.gtid_lost);
+
+            sds gtid_executed_repr = gtidSetDump(server.gtid_executed);
+            sds gtid_lost_repr = gtidSetDump(server.gtid_lost);
+            sds reply_cont_repr = gtidSetDump(parsed->xcontinue.gtid_cont);
+            sds reply_executed_repr = gtidSetDump(reply_executed);
+            sds reply_lost_repr = gtidSetDump(parsed->xcontinue.gtid_lost);
+
+            serverLog(LL_NOTICE,
+                    "[psync] reply gtid.executed(%s) = gtid.cont(%s) - gtid.lost(%s)",
+                    reply_executed_repr,reply_cont_repr,reply_lost_repr);
+
+            serverLog(LL_NOTICE,"[psync] align my gtid.sets with master, "
+                    "gtid.executed: %s => %s, gtid.lost: %s => %s",
+                    gtid_executed_repr,reply_executed_repr,gtid_lost_repr,reply_lost_repr);
+
+            sdsfree(reply_lost_repr);
+            sdsfree(reply_executed_repr);
+            sdsfree(reply_cont_repr);
+            sdsfree(gtid_lost_repr);
+            sdsfree(gtid_executed_repr);
+
+            serverReplStreamSwitch2Xsync(
+                    parsed->xcontinue.replid,parsed->xcontinue.reploff,
+                    parsed->xcontinue.master_uuid,
+                    reply_executed,parsed->xcontinue.gtid_lost,RS_UPDATE_DOWN,
+                    "slave psync=>xcontinue");
+            serverReplStreamResurrectCreate(conn,-1,
+                    parsed->xcontinue.replid,parsed->xcontinue.reploff);
+            result = PSYNC_CONTINUE;
+
+            gtidSetFree(reply_executed);
         } else {
             /* psync => fullresync, psync => continue handled by redis. */
             if (parsed->type == SYNC_REPLY_FULLRESYNC) {
@@ -1417,6 +1447,7 @@ int gtidTest(int argc, char **argv, int accurate) {
         sds reply, replid = sdsnew("0123456789012345678901234567890123456789"),
             master_uuid = sdsnew("A");
         gtidSet *gtid_cont = gtidSetDecode("A:1,B:2",7);
+        gtidSet *gtid_lost = gtidSetDecode("C:3",3);
 
         reply = sdsnew("+FULLRESYNC invalid_replid 10");
         parsed = parsedSyncReplyNew();
@@ -1498,6 +1529,18 @@ int gtidTest(int argc, char **argv, int accurate) {
         parseSyncReplyXcontinue(reply,parsed);
         test_assert(parsed->type == SYNC_REPLY_XCONTINUE);
         test_assert(gtidSetEqual(parsed->xcontinue.gtid_cont,gtid_cont));
+        test_assert(gtidSetCount(parsed->xcontinue.gtid_lost) == 0);
+        test_assert(sdscmp(parsed->xcontinue.master_uuid,master_uuid) == 0);
+        test_assert(sdscmp(parsed->xcontinue.replid,replid) == 0);
+        test_assert(parsed->xcontinue.reploff == 1234);
+        parsedSyncReplyFree(parsed), sdsfree(reply);
+
+        reply = sdsnew("+XCONTINUE REPLID 0123456789012345678901234567890123456789 REPLOFF 1234 GTID.SET A:1,B:2 GTID.LOST C:3 MASTER.UUID A FOO BAR");
+        parsed = parsedSyncReplyNew();
+        parseSyncReplyXcontinue(reply,parsed);
+        test_assert(parsed->type == SYNC_REPLY_XCONTINUE);
+        test_assert(gtidSetEqual(parsed->xcontinue.gtid_cont,gtid_cont));
+        test_assert(gtidSetEqual(parsed->xcontinue.gtid_lost,gtid_lost));
         test_assert(sdscmp(parsed->xcontinue.master_uuid,master_uuid) == 0);
         test_assert(sdscmp(parsed->xcontinue.replid,replid) == 0);
         test_assert(parsed->xcontinue.reploff == 1234);
@@ -1505,6 +1548,7 @@ int gtidTest(int argc, char **argv, int accurate) {
 
         sdsfree(replid), sdsfree(master_uuid);
         gtidSetFree(gtid_cont);
+        gtidSetFree(gtid_lost);
     }
 
     return error;

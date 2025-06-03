@@ -269,7 +269,53 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
 
         assert_equal [status $master gtid_executed] [status $slave gtid_executed]
 
-        verify_log_message -1 "*Partial sync request from*rejected*psync offset(*) < prev_repl_mode.from(*)*" $orig_log_lines
+        verify_log_message -1 "*Partial sync request from*rejected*gtid.set-master(*) and gtid.set-slave(*) not related*" $orig_log_lines
+        assert_equal [status $master sync_full] [expr $orig_sync_full+1]
+        assert_equal [get_info_property $slave gtid gtid_sync_stat xsync_xfullresync] [expr $orig_xsync_xfullresync+1]
+
+        $slave replicaof no one
+    }
+
+    # master: | (X) set hello world | (P) set hello world_1 | (X) set hello world_2 |
+    # slave:  | (X) set hello world
+    test "xsync from prev prev repl stage: xfullresync (gtid not related)" {
+        assert_equal [status $master gtid_executed] [status $slave gtid_executed]
+        assert_equal [status $master gtid_repl_mode] xsync
+        assert_equal [status $slave gtid_repl_mode] xsync
+
+        $slave replicaof $master_host $master_port
+        wait_for_sync $slave
+
+        $master set hello world
+        wait_for_ofs_sync $master $slave
+        assert_equal [$slave get hello] world
+        assert_repl_stream_aligned $master $slave
+
+        $slave replicaof 127.0.0.1 0
+        after 100
+
+        $master config set gtid-enabled no
+        assert_equal [status $master gtid_repl_mode] psync
+        assert_equal [status $master gtid_prev_repl_mode] xsync
+        $master set hello world_1
+
+        $master config set gtid-enabled yes
+        assert_equal [status $master gtid_repl_mode] xsync
+        assert_equal [status $master gtid_prev_repl_mode] psync
+        $master set hello world_2
+
+        set orig_log_lines [count_log_lines -1]
+        set orig_sync_full [status $master sync_full]
+        set orig_xsync_xfullresync [get_info_property $slave gtid gtid_sync_stat xsync_xfullresync]
+
+        $slave replicaof $master_host $master_port
+        wait_for_sync $slave
+        wait_for_ofs_sync $master $slave
+        assert_repl_stream_aligned $master $slave
+
+        assert_equal [status $master gtid_executed] [status $slave gtid_executed]
+
+        verify_log_message -1 "*Partial sync request from*rejected*gtid.set-master(*) and gtid.set-slave(*) not related*" $orig_log_lines
         assert_equal [status $master sync_full] [expr $orig_sync_full+1]
         assert_equal [get_info_property $slave gtid gtid_sync_stat xsync_xfullresync] [expr $orig_xsync_xfullresync+1]
 
@@ -324,6 +370,13 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
     # master: |(X)
     # slave : |(X) set foo bar; ...(9999)...; set foo bar |
     test "master(X) slave(X) LOCATE(X): gap > maxgap => xfullresync" {
+        # make gtid.set related
+        $slave replicaof $master_host $master_port
+        $master set foo bar
+        wait_for_sync $slave
+        wait_for_ofs_sync $master $slave
+        $slave replicaof no one
+
         assert_equal [status $master gtid_executed] [status $slave gtid_executed]
         assert_equal [status $master gtid_repl_mode] xsync
         assert_equal [status $slave gtid_repl_mode] xsync
