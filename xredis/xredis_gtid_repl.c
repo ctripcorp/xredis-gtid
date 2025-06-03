@@ -244,7 +244,7 @@ typedef struct syncResult {
             sds replid;
             long long reploff;
             gtidSet *gtid_cont;
-            gtidSet *gtid_lost;
+            gtidSet *delta_lost;
         } xc; /* xcontinue */
         struct {
             sds replid;
@@ -255,7 +255,7 @@ typedef struct syncResult {
              * when reploff < 0, it will not be propragte to slave. */
             long long reploff;
             /* gtid.set-lost might exists when xsync => psync. */
-            gtidSet *gtid_lost;
+            gtidSet *delta_lost;
         } cc; /* continue */
     };
 } syncResult;
@@ -273,11 +273,11 @@ void syncResultFree(syncResult *result) {
     case SYNC_ACTION_XCONTINUE:
         sdsfree(result->xc.replid);
         gtidSetFree(result->xc.gtid_cont);
-        gtidSetFree(result->xc.gtid_lost);
+        gtidSetFree(result->xc.delta_lost);
         break;
     case SYNC_ACTION_CONTINUE:
         sdsfree(result->cc.replid);
-        gtidSetFree(result->cc.gtid_lost);
+        gtidSetFree(result->cc.delta_lost);
         break;
     case SYNC_ACTION_FULL:
         break;
@@ -352,7 +352,7 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
                 result->xc.replid = sdsnew(serverReplModeGetCurReplIdOff(
                             psync_offset-1,&result->xc.reploff));
                 result->xc.gtid_cont = gtid_cont, gtid_cont = NULL;
-                result->xc.gtid_lost = gtidSetNew();
+                result->xc.delta_lost = gtidSetNew();
                 result->msg = sdsnew("psync => xsync");
 
                 sdsfree(gtid_master_repr);
@@ -483,14 +483,14 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
         result->xc.replid = sdsnew(serverReplModeGetPrevReplIdOff(
                     psync_offset-1,&result->xc.reploff));
         result->xc.gtid_cont = gtid_cont, gtid_cont = NULL;
-        result->xc.gtid_lost = gtid_mlost, gtid_mlost = NULL;
+        result->xc.delta_lost = gtid_mlost, gtid_mlost = NULL;
         result->msg = sdscatprintf(sdsempty(),
                 "gap=%lld <= maxgap=%lld",gap,maxgap);
     } else if (slr.locate_type == LOCATE_TYPE_SWITCH) {
         result->action = SYNC_ACTION_CONTINUE;
         result->cc.replid = sdsnew(server.replid);
         result->cc.reploff = psync_offset-1;
-        result->cc.gtid_lost = gtid_mlost, gtid_mlost = NULL;
+        result->cc.delta_lost = gtid_mlost, gtid_mlost = NULL;
         result->msg = sdsnew("xsync => psync");
     } else {
         serverAssert(slr.locate_type == LOCATE_TYPE_CUR);
@@ -498,7 +498,7 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
         result->xc.replid = sdsnew(serverReplModeGetCurReplIdOff(
                     psync_offset-1,&result->xc.reploff));
         result->xc.gtid_cont = gtid_cont, gtid_cont = NULL;
-        result->xc.gtid_lost = gtid_mlost, gtid_mlost = NULL;
+        result->xc.delta_lost = gtid_mlost, gtid_mlost = NULL;
         result->msg = sdscatprintf(sdsempty(),
                 "gap=%lld <= maxgap=%lld",gap,maxgap);
     }
@@ -655,31 +655,34 @@ int masterReplySyncRequest(client *c, syncResult *result) {
         const char *master_uuid;
         size_t master_uuid_len;
         sds gtid_cont_repr = gtidSetQuoteIfEmpty(gtidSetDump(result->xc.gtid_cont));
+        sds gtid_lost_repr = gtidSetQuoteIfEmpty(gtidSetDump(server.gtid_lost));
 
         serverLog(LL_NOTICE,
                 "[%s] Partial sync request from %s accepted: %s, "
-                "offset=%lld, limit=%lld, gtid.set-cont=%s, master.uuid=%s",
+                "offset=%lld, limit=%lld, gtid.set-cont=%s, gtid.set-lost=%s, master.uuid=%s",
                 replModeName(result->request_mode),replicationGetSlaveName(c),
                 result->msg, result->offset, result->limit,
-                gtid_cont_repr, server.uuid);
+                gtid_cont_repr, gtid_lost_repr, server.uuid);
 
-        if (result->xc.gtid_lost)
-            serverReplStreamUpdateXsync(result->xc.gtid_lost,c,NULL,NULL,-1);
+        if (result->xc.delta_lost)
+            serverReplStreamUpdateXsync(result->xc.delta_lost,c,NULL,NULL,-1);
 
         master_uuid = getMasterUuid(&master_uuid_len);
 
         buflen = sdslen(gtid_cont_repr)+256;
         buf = zcalloc(buflen);
         buflen = snprintf(buf,buflen,
-                "+XCONTINUE GTID.SET %.*s MASTER.UUID %.*s "
+                "+XCONTINUE GTID.SET %.*s GTID.LOST %.*s MASTER.UUID %.*s "
                 "REPLID %s REPLOFF %lld\r\n",
                 (int)sdslen(gtid_cont_repr),gtid_cont_repr,
+                (int)sdslen(gtid_lost_repr),gtid_lost_repr,
                 (int)master_uuid_len,master_uuid,
                 result->xc.replid,result->xc.reploff);
         masterSetupPartialSynchronization(c,result->offset,
                 result->limit,buf,buflen);
 
         sdsfree(gtid_cont_repr);
+        sdsfree(gtid_lost_repr);
         zfree(buf);
     } else if (result->action == SYNC_ACTION_CONTINUE) {
         char buf[128];
@@ -691,8 +694,8 @@ int masterReplySyncRequest(client *c, syncResult *result) {
                 result->msg, result->offset, result->limit,
                 result->cc.replid, result->cc.reploff);
 
-        if (result->cc.gtid_lost)
-            serverReplStreamUpdateXsync(result->cc.gtid_lost,c,NULL,NULL,-1);
+        if (result->cc.delta_lost)
+            serverReplStreamUpdateXsync(result->cc.delta_lost,c,NULL,NULL,-1);
 
         if (result->cc.reploff < 0) {
             buflen = snprintf(buf,sizeof(buf),"+CONTINUE %s\r\n",
