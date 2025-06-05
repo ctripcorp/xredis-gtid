@@ -767,6 +767,7 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
 #define SYNC_REPLY_XFULLRESYNC  3
 #define SYNC_REPLY_XCONTINUE    4
 #define SYNC_REPLY_TRANSERR     5
+#define SYNC_REPLY_TRANSERR2    6
 
 typedef struct parsedSyncReply {
     int type;
@@ -1125,6 +1126,8 @@ static parsedSyncReply *parseSyncReply(sds reply) {
     } else if (!strncmp(reply,"-NOMASTERLINK",13) ||
         !strncmp(reply,"-LOADING",8)) {
         parsed->type = SYNC_REPLY_TRANSERR;
+    } else if (!strncmp(reply,"-Reading from master:",21)) {
+        parsed->type = SYNC_REPLY_TRANSERR2;
     } else {
         parsed->type = SYNC_REPLY_INVALID;
         parsed->invalid.errmsg = sdsnew("invalid sync reply type");
@@ -1141,6 +1144,14 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
     parsedSyncReply *parsed = parseSyncReply(reply);
 
     if (parsed->type == SYNC_REPLY_TRANSERR) goto by_redis;
+    if (parsed->type == SYNC_REPLY_TRANSERR2) {
+        serverLog(LL_NOTICE,
+                "[%s] Treat %s as transient error too, try psync again.",
+                replModeName(server.repl_mode->mode), reply);
+        result = PSYNC_TRY_LATER;
+        goto end;
+    }
+
     if (parsed->type == SYNC_REPLY_INVALID) {
         serverLog(LL_WARNING, "[%s] Parsed invalid reply(%s): "
                 "fallback to fullresync",replModeName(server.repl_mode->mode),
