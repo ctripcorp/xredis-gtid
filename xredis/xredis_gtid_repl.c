@@ -669,7 +669,7 @@ int masterReplySyncRequest(client *c, syncResult *result) {
 
         master_uuid = getMasterUuid(&master_uuid_len);
 
-        buflen = sdslen(gtid_cont_repr)+256;
+        buflen = sdslen(gtid_cont_repr) + sdslen(gtid_lost_repr) + 256;
         buf = zcalloc(buflen);
         buflen = snprintf(buf,buflen,
                 "+XCONTINUE GTID.SET %.*s GTID.LOST %.*s MASTER.UUID %.*s "
