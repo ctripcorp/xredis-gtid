@@ -363,7 +363,7 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
 
         test {GTID REPATE SET} {
             catch {r gtid A:1 $::target_db set x foobar} error
-            assert_match $error "ERR gtid command already executed, `A:1`, `$::target_db`, `set`,"
+            assert_match $error "gtid command already executed, `A:1`, `$::target_db`, `set`,"
         }
         test {SET} {
             r set y foobar
@@ -384,7 +384,7 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
             r multi
             r set z foobar1
             catch {r gtid A:3 $::target_db exec} error
-            assert_equal $error "ERR gtid command already executed, `A:3`, `$::target_db`, `exec`,"
+            assert_equal $error "gtid command already executed, `A:3`, `$::target_db`, `exec`,"
             assert_equal [r get z] $z_value
             r set x f1
             r get x
