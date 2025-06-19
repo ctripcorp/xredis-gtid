@@ -139,16 +139,18 @@ void gtidCommand(client *c) {
     }
     if (serverGtidSetContains(uuid,uuid_len,gno)) {
         sds args = sdsempty();
-        for (int i=1, len=GTID_COMMAN_ARGC + 1; i < len && sdslen(args) < 128; i++) {
+        for (int i=1, len=GTID_COMMAN_ARGC + 1; i < len && sdslen(args) < 256; i++) {
             args = sdscatprintf(args, "`%.*s`, ", 128-(int)sdslen(args), (char*)c->argv[i]->ptr);
         }
-        addReplyErrorFormat(c,"gtid command already executed, %s",args);
+        addReplyStatusFormat(c,"gtid command already executed, %s",args);
         if(isGtidExecCommand(c)) {
             discardTransaction(c);
         }
         server.gtid_ignored_cmd_count++;
         if (server.masterhost) {
             serverLog(LL_WARNING, "[CRITICAL] gtid command already execute, %s", args);
+        } else {
+            serverLog(LL_NOTICE, "gtid command already execute, %s", args);
         }
         sdsfree(args);
         return;
