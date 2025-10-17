@@ -960,6 +960,15 @@ void gtidSeqDestroy(gtidSeq *seq) {
     gtid_free(seq);
 }
 
+
+void gtidSeqRebaseOffset(gtidSeq *seq, const char *uuid, size_t uuid_len, size_t offset) {
+    gtidSegment *seg = seq->firstseg;
+    while (seg) {
+        seg->base_offset += offset;
+        seg = seg->next;
+    }
+}
+
 static inline
 gtidSegment *gtidSeqSwitchSegment(gtidSeq *seq, const char *uuid,
         size_t uuid_len, gno_t base_gno, long long base_offset) {
@@ -1000,7 +1009,6 @@ void gtidSeqAppend(gtidSeq *seq, const char *uuid, size_t uuid_len,
         tail_offset = lastseg->base_offset + lastseg->deltas[lastseg->ngno-1];
         assert(tail_offset < offset);
     }
-
     if(lastseg == NULL /* no previous segment */ ||
             lastseg->uuid_len != uuid_len /* uuid switch */ ||
             memcmp(lastseg->uuid, uuid, uuid_len) /* uuid switch */ ||
@@ -1113,13 +1121,13 @@ long long gtidSeqXsync(gtidSeq *seq, gtidSet *req, gtidSet **pcont) {
     long long offset = -1;
     gtidSegment *seg = seq->lastseg;
     gtidSet *cont = gtidSetNew();
-
+    // printf("[latte] gtidSeqXsync seg==NULL %d\n", seg);
     while (seg) {
         uuidSet *uuid_set = gtidSetFind(req,seg->uuid,seg->uuid_len);
         gno_t next_gno = uuid_set ? uuidSetNext(uuid_set,0) : GTID_GNO_INITIAL;
         gno_t start_gno = seg->base_gno + seg->tgno;
         gno_t end_gno = seg->base_gno + seg->ngno - 1; /* inclusive */
-
+        
         if (next_gno > end_gno) {
             seg = NULL;
         } else if (next_gno > start_gno) {

@@ -74,14 +74,13 @@ static sds catAppendOnlyGtidExpireAtCommand(sds buf, robj* gtid, robj* dbid,
  *        gtid setex =>  set  + gtid expireat
  *        gtid set(ex) => set + gtid expireat
  */
-void feedAppendOnlyFileGtid(struct redisCommand *_cmd, int dictid, robj **argv, int argc) {
+void feedAppendOnlyFileGtid(int dictid, robj **argv, int argc) {
     struct redisCommand *cmd;
     sds buf = sdsempty();
 
-    serverAssert(_cmd == server.gtidCommand);
-    cmd = lookupCommand(argv[GTID_COMMAN_ARGC]->ptr);
+    cmd = lookupCommandByCString(argv[GTID_COMMAN_ARGC]->ptr);
 
-    if (dictid != server.aof_selected_db) {
+    if (dictid != -1 && dictid != server.aof_selected_db) {
         char seldb[64];
 
         snprintf(seldb,sizeof(seldb),"%d",dictid);
@@ -90,51 +89,22 @@ void feedAppendOnlyFileGtid(struct redisCommand *_cmd, int dictid, robj **argv, 
         server.aof_selected_db = dictid;
     }
 
-    if (cmd->proc == expireCommand || cmd->proc == pexpireCommand ||
-            cmd->proc == expireatCommand) {
-        buf = catAppendOnlyGtidExpireAtCommand(buf,argv[1],argv[2],NULL,cmd,
-                argv[GTID_COMMAN_ARGC+1],argv[GTID_COMMAN_ARGC+2]);
-    } else if (cmd->proc == setCommand && argc > 3 + GTID_COMMAN_ARGC) {
-        robj *pxarg = NULL;
-        if (!strcasecmp(argv[3 + GTID_COMMAN_ARGC]->ptr, "px")) {
-            pxarg = argv[4 + GTID_COMMAN_ARGC];
-        }
-        if (pxarg) {
-            robj *millisecond = getDecodedObject(pxarg);
-            long long when = strtoll(millisecond->ptr,NULL,10);
-            when += mstime();
+    /* All commands should be propagated the same way in AOF as in replication.
+     * No need for AOF-specific translation. */
+    buf = catAppendOnlyGenericCommand(buf,argc,argv);
 
-            decrRefCount(millisecond);
-
-            robj *newargs[5 + GTID_COMMAN_ARGC];
-            for(int i = 0, len = 3 + GTID_COMMAN_ARGC; i < len; i++) {
-                newargs[i] = argv[i];
-            }
-            newargs[3 + GTID_COMMAN_ARGC] = shared.pxat;
-            newargs[4 + GTID_COMMAN_ARGC] = createStringObjectFromLongLong(when);
-            buf = catAppendOnlyGenericCommand(buf,5 + GTID_COMMAN_ARGC,newargs);
-            decrRefCount(newargs[4 + GTID_COMMAN_ARGC]);
-        } else {
-            buf = catAppendOnlyGenericCommand(buf,argc,argv);
-        }
-    } else {
-        buf = catAppendOnlyGenericCommand(buf,argc,argv);
-    }
-
-    if (server.aof_state == AOF_ON)
+    if (server.aof_state == AOF_ON ||
+        (server.aof_state == AOF_WAIT_REWRITE && server.child_type == CHILD_TYPE_AOF))
         server.aof_buf = sdscatlen(server.aof_buf,buf,sdslen(buf));
-
-    if (server.child_type == CHILD_TYPE_AOF)
-        aofRewriteBufferAppend((unsigned char*)buf,sdslen(buf));
 
     sdsfree(buf);
 }
 
-void ctrip_feedAppendOnlyFile(struct redisCommand *cmd, int dictid,
+void ctrip_feedAppendOnlyFile(int dictid,
         robj **argv, int argc) {
-    if (cmd == server.gtidCommand)
-        feedAppendOnlyFileGtid(cmd,dictid,argv,argc);
+    if (strcasecmp(argv[0]->ptr, "gtid") == 0)
+        feedAppendOnlyFileGtid(dictid,argv,argc);
     else
-        feedAppendOnlyFile(cmd,dictid,argv,argc);
+        feedAppendOnlyFile(dictid,argv,argc);
 }
 

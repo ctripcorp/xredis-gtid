@@ -30,13 +30,19 @@
 #include <gtid.h>
 #include <ctype.h>
 
-void propagateArgsInit(propagateArgs *pargs, struct redisCommand *cmd,
+void propagateArgsInit(propagateArgs *pargs,
         int dbid, robj **argv, int argc) {
-    pargs->orig_cmd = cmd;
+    pargs->orig_cmd = lookupCommand(argv, argc);
+    serverAssert(pargs->orig_cmd != NULL);
     pargs->orig_argv = argv;
     pargs->orig_argc = argc;
     pargs->orig_dbid = dbid;
 }
+
+robj** createGtidCommand(int argc, robj** argv) {
+
+}
+
 
 /* Prepare to feed:
  * 1. rewrite to gtid... if needed: set k v  -> gtid {gtid_repr} {dbid} set k v
@@ -57,7 +63,7 @@ void propagateArgsPrepareToFeed(propagateArgs *pargs) {
 
         /* afterPropagateExec could be called before calling propagate()
          * for exec, so we clear gtid_xxx_at_multi here. */
-        if (pargs->orig_cmd == server.execCommand ||
+        if (pargs->orig_cmd->proc == execCommand ||
                 (pargs->orig_cmd->proc == gtidCommand &&
                  strcasecmp(pargs->orig_argv[3]->ptr, "exec") == 0)) {
             server.gtid_dbid_at_multi = -1;
@@ -85,21 +91,20 @@ void propagateArgsPrepareToFeed(propagateArgs *pargs) {
             !server.gtid_enabled ||
             pargs->orig_cmd->proc == gtidCommand ||
             pargs->orig_cmd->proc == publishCommand ||
-            (server.propagate_in_transaction &&
-             pargs->orig_cmd != server.execCommand)) {
+            (server.gtid_dbid_at_multi != -1 &&
+             pargs->orig_cmd->proc != execCommand)) {
         cmd = pargs->orig_cmd;
         argc = pargs->orig_argc;
         argv = pargs->orig_argv;
     } else {
         gno = gtidSetCurrentUuidSetNext(server.gtid_executed,1);
-
         bufmaxlen = uuid_len+1+21/* GNO_REPR_MAX_LEN */;
         buf = zmalloc(bufmaxlen);
         buflen = uuidGnoEncode(buf, bufmaxlen, uuid, uuid_len, gno);
         gtid_repr = sdsnewlen(buf, buflen);
         zfree(buf);
 
-        cmd = server.gtidCommand;
+        cmd = lookupCommandByCString("gtid");
         argc = pargs->orig_argc+3;
         argv = zmalloc(argc*sizeof(robj*));
         argv[0] = shared.gtid;
@@ -148,6 +153,8 @@ void resetServerReplMode(int mode, const char *log_prefix) {
     server.repl_mode->from = server.master_repl_offset+1;
     cur = dumpServerReplMode();
     if (log_prefix) {
+        //reset repl mode to psync: {(psync:0:replid=77f38da38fb005b325e87bcc7484cb8cc5cbdd8a,offset=115274,replid2=c433bf410b4d7914216d5e0d28cecf24cc7a8c6f,offset2=92459),(psync:0:replid=,replid2=,offset2=0)} => 
+        //                          {(psync:115275:replid=77f38da38fb005b325e87bcc7484cb8cc5cbdd8a,offset=115274,replid2=c433bf410b4d7914216d5e0d28cecf24cc7a8c6f,offset2=92459),(?:-1:)} 
         serverLog(LL_NOTICE,"[gtid] reset repl mode to %s: %s => %s (%s)",
                 replModeName(mode), prev, cur, log_prefix);
     }
@@ -298,7 +305,13 @@ void locateServerReplMode(int request_mode, long long psync_offset,
     serverAssert(server.repl_mode->mode != REPL_MODE_UNSET);
     serverAssert(request_mode == REPL_MODE_PSYNC ||
             request_mode == REPL_MODE_XSYNC);
-
+    serverLog(LL_WARNING, "psync_offset(%lld) server.repl_mode->from(%lld) server.prev_repl_mode->from(%lld) request_mode(%d) server.repl_mode->mode(%d) server.prev_repl_mode->mode(%d)", 
+        psync_offset, 
+        server.repl_mode->from, 
+        server.prev_repl_mode->from, 
+        request_mode, 
+        server.repl_mode->mode, 
+        server.prev_repl_mode->mode);
     if (psync_offset > server.repl_mode->from) {
         if (request_mode == server.repl_mode->mode) {
             slr->locate_mode = server.repl_mode->mode;
@@ -354,10 +367,9 @@ void ctrip_createReplicationBacklog(void) {
     server.gtid_seq = gtidSeqCreate();
 }
 
-void ctrip_resizeReplicationBacklog(long long newsize) {
-    long long oldsize = server.repl_backlog_size;
-    resizeReplicationBacklog(newsize);
-    if (server.repl_backlog != NULL && oldsize != server.repl_backlog_size) {
+void ctrip_resizeReplicationBacklog() {
+    resizeReplicationBacklog();
+    if (server.repl_backlog != NULL) {
         /* realloc a new gtidSeq to keep gtid_seq sync with backlog, see
          * resizeReplicationBacklog for more details. */
         gtidSeqDestroy(server.gtid_seq);
@@ -377,11 +389,8 @@ void ctrip_freeReplicationBacklog(void) {
 void ctrip_resetReplicationBacklog(void) {
     /* See resizeReplicationBacklog for more details */
     if (server.repl_backlog != NULL) {
-        zfree(server.repl_backlog);
-        server.repl_backlog = zmalloc(server.repl_backlog_size);
-        server.repl_backlog_histlen = 0;
-        server.repl_backlog_idx = 0;
-        server.repl_backlog_off = server.master_repl_offset+1;
+        freeReplicationBacklog();
+        createReplicationBacklog();
     }
     /* gtid_seq became invalid if master offset bumped. */
     if (server.gtid_seq != NULL) {
@@ -390,24 +399,28 @@ void ctrip_resetReplicationBacklog(void) {
     }
 }
 
-void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv,
+void ctrip_replicationFeedSlaves(list* saves,int dictid, robj **argv,
         int argc, const char *uuid, size_t uuid_len, gno_t gno, long long offset) {
     int touch_index = uuid != NULL && gno >= GTID_GNO_INITIAL && server.gtid_seq
         && server.masterhost == NULL;
 #ifdef ENABLE_SWAP
     touch_index = touch_index && server.swap_draining_master == NULL;
 #endif
+   
     if (touch_index) gtidSeqAppend(server.gtid_seq,uuid,uuid_len,gno,offset);
-    replicationFeedSlaves(slaves,dictid,argv,argc);
-    if (touch_index) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
+    replicationFeedSlaves(saves, dictid,argv,argc);
+    /* move to repl_backlog->offset change (incrementalTrimReplicationBacklog) */
+    // if (touch_index) gtidSeqTrim(server.gtid_seq,server.repl_backlog->offset);
 }
 
-void ctrip_replicationFeedSlavesFromMasterStream(list *slaves, char *buf,
+void ctrip_replicationFeedSlavesFromMasterStream(char *buf,
         size_t buflen, const char *uuid, size_t uuid_len, gno_t gno, long long offset) {
     int touch_index = uuid != NULL && gno >= GTID_GNO_INITIAL && server.gtid_seq;
     if (touch_index) gtidSeqAppend(server.gtid_seq,uuid,uuid_len,gno,offset);
-    replicationFeedSlavesFromMasterStream(slaves,buf,buflen);
-    if (touch_index) gtidSeqTrim(server.gtid_seq,server.repl_backlog_off);
+    replicationFeedStreamFromMasterStream(buf,buflen);
+    /* move to repl_backlog->offset change (incrementalTrimReplicationBacklog) */
+    // if (touch_index) gtidSeqTrim(server.gtid_seq,server.repl_backlog->offset);
+
 }
 
 void gtidInitialInfoInit(gtidInitialInfo *info) {
@@ -607,12 +620,13 @@ void serverReplStreamSwitch2Psync(const char *replid, long long reploff,
     serverAssert(server.repl_mode->mode == REPL_MODE_XSYNC);
     serverAssert(!server.master && !server.cached_master);
     serverAssert(replid != NULL && reploff >= 0);
-
+    if (flags & RS_UPDATE_DOWN) serverReplStreamDisconnectSlaves(log_prefix);
     if (server.master_repl_offset != reploff) {
         /* discard backlog when master_repl_offset bump. */
         serverLog(LL_NOTICE, "[gtid] switch repl stream to psync: "
                 "backlog discared, master_repl_offset(%lld) != reploff(%lld)",
                 server.master_repl_offset, reploff);
+        serverLog(LL_WARNING, "serverReplStreamSwitch2Psync server.master_repl_offset=%lld", reploff);
         server.master_repl_offset = reploff;
         ctrip_resetReplicationBacklog();
     } else {
@@ -633,7 +647,7 @@ void serverReplStreamSwitch2Psync(const char *replid, long long reploff,
     clearMasterUuid();
     xsyncUuidInterestedInit();
 
-    if (flags & RS_UPDATE_DOWN) serverReplStreamDisconnectSlaves(log_prefix);
+    
 }
 
 /* server repl stream could switch to xsync:
@@ -676,8 +690,8 @@ void serverReplStreamSwitch2Xsync(sds replid, long long reploff,
 void serverReplStreamReset2Psync(const char *replid, long long reploff,
         int flags, const char *log_prefix) {
     serverAssert(replid != NULL && reploff >= 0);
-
     server.master_repl_offset = reploff;
+    if (flags & RS_UPDATE_DOWN) serverReplStreamDisconnectSlaves(log_prefix);
     ctrip_resetReplicationBacklog();
 
     resetServerReplMode(REPL_MODE_PSYNC,log_prefix);
@@ -690,7 +704,7 @@ void serverReplStreamReset2Psync(const char *replid, long long reploff,
     xsyncUuidInterestedInit();
     server.gtid_reploff_delta = 0;
 
-    if (flags & RS_UPDATE_DOWN) serverReplStreamDisconnectSlaves(log_prefix);
+    
 }
 
 /* server repl stream could reset to xsync:

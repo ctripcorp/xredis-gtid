@@ -233,6 +233,8 @@ syncRequest *masterParseSyncRequest(client *c) {
         masterParsePsyncRequest(request,c->argv[1],c->argv[2]);
     } else if (!strcasecmp(mode,"xsync")) {
         masterParseXsyncRequest(request,c->argv[1],c->argv[2],c->argc-3,c->argv+3);
+        sds f = request->x.gtid_slave != NULL? gtidSetDump(request->x.gtid_slave): NULL;
+        sdsfree(f);
     } else {
         request->mode = REPL_MODE_UNSET;
         request->i.msg = sdscatprintf(sdsempty(), "invalid repl mode: %s", mode);
@@ -313,13 +315,13 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
     }
 
     if (!server.repl_backlog ||
-        psync_offset < server.repl_backlog_off ||
-        psync_offset > (server.repl_backlog_off+server.repl_backlog_histlen)) {
+        psync_offset < server.repl_backlog->offset ||
+        psync_offset > (server.repl_backlog->offset + server.repl_backlog->histlen)) {
         result->action = SYNC_ACTION_FULL;
         result->msg = sdscatprintf(sdsempty(),
                 "psync offset(%lld) not in backlog [%lld,%lld)",
-                psync_offset, server.repl_backlog_off,
-                server.repl_backlog_off+server.repl_backlog_histlen);
+                psync_offset, server.repl_backlog? server.repl_backlog->offset: 0,
+                server.repl_backlog? server.repl_backlog->offset + server.repl_backlog->histlen:0);
         return;
     }
 
@@ -338,6 +340,8 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
         const char *replid2 = server.prev_repl_mode->psync.replid2;
         long long offset1 = server.repl_mode->from;
         long long offset2 = server.prev_repl_mode->psync.second_replid_offset;
+        serverLog(LL_WARNING, "psync_replid:%s, offset:%lld, replid1:%s, offset1:%lld, replid2:%s, offset2:%lld",
+            psync_replid, psync_offset, replid1, offset1, replid2, offset2);
         if ((!strcasecmp(psync_replid, replid1) && psync_offset <= offset1) ||
             (!strcasecmp(psync_replid, replid2) && psync_offset <= offset2)) {
             if (slr.locate_type == LOCATE_TYPE_PREV) {
@@ -388,7 +392,6 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
         serverAssert(slr.locate_type == LOCATE_TYPE_CUR);
         result->action = SYNC_ACTION_NOP;
     }
-
     syncLocateResultDeinit(&slr);
 }
 
@@ -437,6 +440,7 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
         serverLog(LL_NOTICE, "[xsync] [ana] continue point defaults"
                 " to backlog tail: gtid.seq not exists.");
     } else {
+        sds gtid_xsync_repr = NULL; 
         psync_offset = gtidSeqXsync(server.gtid_seq,gtid_slave,&gtid_xsync);
     }
 
@@ -456,12 +460,13 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
         }
     }
 
-    if (server.repl_mode->mode == REPL_MODE_PSYNC && psync_offset < server.repl_backlog_off) {
+    if (server.repl_mode->mode == REPL_MODE_PSYNC && (!server.repl_backlog ||  
+        psync_offset < server.repl_backlog->offset)) {
         result->action = SYNC_ACTION_FULL;
         result->msg = result->msg = sdscatprintf(sdsempty(),
                 "psync offset(%lld) not in backlog [%lld,%lld)",
-                psync_offset, server.repl_backlog_off,
-                server.repl_backlog_off+server.repl_backlog_histlen);
+                psync_offset, server.repl_backlog->offset,
+                server.repl_backlog->offset+server.repl_backlog->histlen);
         goto end;
     } 
     result->offset = psync_offset;
@@ -602,35 +607,109 @@ syncResult *masterAnaSyncRequest(syncRequest *request) {
 
 typedef void (*consume_cb)(char *p, long long thislen, void *pd);
 
-/* Check adReplyReplicationBacklog for more details */
+/* Check addReplyReplicationBacklog for more details */
+// long long consumeReplicationBacklogLimited(long long offset, long long limit,
+//          consume_cb cb, void *pd) {
+//     long long added = 0, j, skip, len;
+//     serverAssert(limit >= 0 && offset >= server.repl_backlog->offset);
+//     if (server.repl_backlog_histlen == 0) return 0;
+//     skip = offset - server.repl_backlog->offset;
+//     j = (server.repl_backlog_idx +
+//         (server.repl_backlog_size-server.repl_backlog->histlen)) %
+//         server.repl_backlog_size;
+//     j = (j + skip) % server.repl_backlog_size;
+//     len = server.repl_backlog_histlen - skip;
+//     len = len < limit ? len : limit; /* limit bytes to copy */
+//     while(len) {
+//         long long thislen =
+//             ((server.repl_backlog_size - j) < len) ?
+//             (server.repl_backlog_size - j) : len;
+//         cb(server.repl_backlog + j, thislen, pd);
+//         len -= thislen;
+//         j = 0;
+//         added += thislen;
+//     }
+
+//     return added;
+// }
+
+/* Feed the slave 'c' with the replication backlog starting from the
+ * specified 'offset' up to the end of the backlog. */
 long long consumeReplicationBacklogLimited(long long offset, long long limit,
-         consume_cb cb, void *pd) {
-    long long added = 0, j, skip, len;
-    serverAssert(limit >= 0 && offset >= server.repl_backlog_off);
-    if (server.repl_backlog_histlen == 0) return 0;
-    skip = offset - server.repl_backlog_off;
-    j = (server.repl_backlog_idx +
-        (server.repl_backlog_size-server.repl_backlog_histlen)) %
-        server.repl_backlog_size;
-    j = (j + skip) % server.repl_backlog_size;
-    len = server.repl_backlog_histlen - skip;
-    len = len < limit ? len : limit; /* limit bytes to copy */
-    while(len) {
-        long long thislen =
-            ((server.repl_backlog_size - j) < len) ?
-            (server.repl_backlog_size - j) : len;
-        cb(server.repl_backlog + j, thislen, pd);
-        len -= thislen;
-        j = 0;
-        added += thislen;
+        consume_cb cb, void *pd) {
+    long long skip;
+    long long added = 0;
+    if (server.repl_backlog->histlen == 0) {
+        serverLog(LL_DEBUG, "[PSYNC] Backlog history len is zero");
+        return 0;
+    }
+    /* Compute the amount of bytes we need to discard. */
+    skip = offset - server.repl_backlog->offset;
+    long long len = server.repl_backlog->histlen - skip;
+    len = len < limit ? len: limit;
+    /* Iterate recorded blocks, quickly search the approximate node. */
+    listNode *node = NULL;
+    if (raxSize(server.repl_backlog->blocks_index) > 0) {
+        uint64_t encoded_offset = htonu64(offset);
+        raxIterator ri;
+        raxStart(&ri, server.repl_backlog->blocks_index);
+        raxSeek(&ri, ">", (unsigned char*)&encoded_offset, sizeof(uint64_t));
+        if (raxEOF(&ri)) {
+            /* No found, so search from the last recorded node. */
+            raxSeek(&ri, "$", NULL, 0);
+            raxPrev(&ri);
+            node = (listNode *)ri.data;
+        } else {
+            raxPrev(&ri); /* Skip the sought node. */
+            /* We should search from the prev node since the offset of current
+             * sought node exceeds searching offset. */
+            if (raxPrev(&ri))
+                node = (listNode *)ri.data;
+            else
+                node = server.repl_backlog->ref_repl_buf_node;
+        }
+        raxStop(&ri);
+    } else {
+        /* No recorded blocks, just from the start node to search. */
+        node = server.repl_backlog->ref_repl_buf_node;
     }
 
+    /* Search the exact node. */
+    while (node != NULL) {
+        replBufBlock *o = listNodeValue(node);
+        if (o->repl_offset + (long long)o->used >= offset) break;
+        node = listNextNode(node);
+    }
+    serverAssert(node != NULL);
+
+    serverLog(LL_WARNING, "start copy backlog offset(%lld) len(%lld)", offset, len);
+    while (len) {
+        replBufBlock *o = listNodeValue(node);
+        int start = 0;
+        if (offset > o->repl_offset) {
+            start = offset - o->repl_offset;
+        }
+        long long thislen = o->used - start  < len?
+                o->used - start: len;
+        serverLog(LL_WARNING, "block start(%lld), offset(%lld) size(%lld)", o->repl_offset, start, thislen);
+        cb(o->buf + start, thislen, pd);
+        len -= thislen;
+        start = 0;
+        added += thislen;
+        node = listNextNode(node);
+    }
+    serverLog(LL_WARNING, "added=%lld", added);
     return added;
 }
 
 static void consumeReplicationBacklogLimitedAddReplyCb(char *p,
         long long thislen, void *pd) {
-    addReplySds((client*)pd, sdsnewlen(p,thislen));
+    //can't use addReplySds send slave message, because client will be closed by underlying layer  
+    if (connWrite(((client*)pd)->conn,p,thislen) != thislen) {
+        serverLog(LL_WARNING, "[consumeReplicationBacklogLimitedAddReplyCb] send slave fail");
+        freeClientAsync((client*)pd);
+    }
+
 }
 
 long long addReplyReplicationBacklogLimited(client *c, long long offset,
@@ -669,14 +748,14 @@ void masterSetupPartialSynchronization(client *c, long long offset,
     c->flags |= CLIENT_SLAVE;
     c->replstate = SLAVE_STATE_ONLINE;
     c->repl_ack_time = server.unixtime;
-    c->repl_put_online_on_ack = 0;
     listAddNodeTail(server.slaves,c);
 
     if (connWrite(c->conn,buf,buflen) != buflen) {
         freeClientAsync(c);
         return;
     }
-    serverAssert(offset >= server.repl_backlog_off);
+
+    serverAssert(offset >= server.repl_backlog->offset);
     if (limit > 0) {
         sent = addReplyReplicationBacklogLimited(c,offset,limit);
     } else {
@@ -688,10 +767,11 @@ void masterSetupPartialSynchronization(client *c, long long offset,
         sent, offset, limit);
 
     if (limit > 0) {
-        c->flags |= CLIENT_CLOSE_AFTER_REPLY;
         serverLog(LL_NOTICE,
                 "[gtid] Disconnect slave %s to notify repl mode switched.",
                 replicationGetSlaveName(c));
+        serverLog(LL_WARNING, "add CLIENT_CLOSE_AFTER_REPLY is CLIENT_CLOSE_ASAP %d", c->flags & CLIENT_CLOSE_ASAP);
+        freeClientAsync(c);
         return;
     }
 
@@ -707,14 +787,14 @@ void masterSetupPartialSynchronization(client *c, long long offset,
                           NULL);
 }
 
-int masterReplySyncRequest(client *c, syncResult *result) {
+int masterReplySyncRequest(client *c, long long psync_offset, syncResult *result) {
     int ret = result->action == SYNC_ACTION_FULL ? C_ERR : C_OK;
 
     if (result->action == SYNC_ACTION_NOP) {
         serverLog(LL_NOTICE,
                 "[%s] Partial sync request from %s handle by vanilla redis.",
                 replModeName(result->request_mode), replicationGetSlaveName(c));
-        ret = masterTryPartialResynchronization(c);
+        ret = masterTryPartialResynchronization(c, psync_offset);
     } else if (result->action == SYNC_ACTION_XCONTINUE) {
         char *buf;
         int buflen;
@@ -781,10 +861,10 @@ int masterReplySyncRequest(client *c, syncResult *result) {
     return ret;
 }
 
-int ctrip_masterTryPartialResynchronization(client *c) {
+int ctrip_masterTryPartialResynchronization(client *c, long long psync_offset) {
     syncRequest *request = masterParseSyncRequest(c);
     syncResult *result = masterAnaSyncRequest(request);
-    int ret = masterReplySyncRequest(c,result);
+    int ret = masterReplySyncRequest(c,psync_offset,result);
     syncRequestFree(request);
     syncResultFree(result);
     return ret;
@@ -792,17 +872,10 @@ int ctrip_masterTryPartialResynchronization(client *c) {
 
 const char *xsyncUuidInterestedGet(void);
 
-int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
-    gtidSet *gtid_slave = NULL;
+sds sendXsyncCommand(connection *conn) {
     char maxgap[32];
-    int result = PSYNC_WAIT_REPLY;
+    gtidSet *gtid_slave = NULL;
     sds gtid_slave_repr, gtid_lost_repr;
-
-    serverLog(LL_NOTICE, "[gtid] Trying parital sync in (%s) mode.",
-            replModeName(server.repl_mode->mode));
-
-    if (server.repl_mode->mode != REPL_MODE_XSYNC) return -1;
-
     gtid_slave = serverGtidSetGet("[xsync]");
     gtid_slave_repr = gtidSetDump(gtid_slave);
     gtid_lost_repr = gtidSetDump(server.gtid_lost);
@@ -815,27 +888,39 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
 
     sds reply = sendCommand(conn,"XSYNC",uuid_interested,
             gtid_slave_repr,"GTID.LOST",gtid_lost_repr,"MAXGAP",maxgap,NULL);
+    gtidSetFree(gtid_slave);
+    sdsfree(gtid_slave_repr);
+    sdsfree(gtid_lost_repr);
+    return reply;
+} 
+
+int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
+    int result = PSYNC_WAIT_REPLY;
+    
+
+    serverLog(LL_NOTICE, "[gtid] Trying parital sync in (%s) mode.",
+            replModeName(server.repl_mode->mode));
+
+    if (server.repl_mode->mode != REPL_MODE_XSYNC) return -1;
+
+    sds reply = sendXsyncCommand(conn);
     if (reply != NULL) {
         serverLog(LL_WARNING,"[xsync] Unable to send XSYNC: %s", reply);
         sdsfree(reply);
         connSetReadHandler(conn, NULL);
         result = PSYNC_WRITE_ERROR;
     }
-
-    gtidSetFree(gtid_slave);
-    sdsfree(gtid_slave_repr);
-    sdsfree(gtid_lost_repr);
-
     return result;
 }
 
-#define SYNC_REPLY_INVALID      0
-#define SYNC_REPLY_FULLRESYNC   1
-#define SYNC_REPLY_CONTINUE     2
-#define SYNC_REPLY_XFULLRESYNC  3
-#define SYNC_REPLY_XCONTINUE    4
-#define SYNC_REPLY_TRANSERR     5
-#define SYNC_REPLY_TRANSERR2    6
+#define SYNC_REPLY_INVALID          0
+#define SYNC_REPLY_FULLRESYNC       1
+#define SYNC_REPLY_CONTINUE         2
+#define SYNC_REPLY_XFULLRESYNC      3
+#define SYNC_REPLY_XCONTINUE        4
+#define SYNC_REPLY_RDBCHANNELSYNC   5
+#define SYNC_REPLY_TRANSERR         6
+#define SYNC_REPLY_TRANSERR2        7
 
 typedef struct parsedSyncReply {
     int type;
@@ -862,6 +947,9 @@ typedef struct parsedSyncReply {
             sds replid;
             long long reploff;
         } xcontinue;
+        struct {
+            long long client_id;
+        } rdbchannelsync;
         struct {
             sds errmsg;
         } invalid;
@@ -989,6 +1077,28 @@ invalid:
     parsed->type = SYNC_REPLY_INVALID;
     parsed->invalid.errmsg = errmsg;
 }
+
+/* +RDBCHANNELSYNC clientid*/
+static void parseSyncReplyRdbchannelsync(sds reply, parsedSyncReply *parsed) {
+    char *client_id_str = strchr(reply,' ');
+    sds errmsg = NULL;
+    if (client_id_str)
+        client_id_str++;
+
+    if (!client_id_str) {
+        errmsg = sdsnew("Master replied with wrong +RDBCHANNELSYNC syntax:");
+        goto invalid;
+    }
+    long long client_id = strtoll(client_id_str, NULL, 10);
+    parsed->type = SYNC_REPLY_RDBCHANNELSYNC;
+    parsed->rdbchannelsync.client_id = client_id;
+    return;
+
+invalid:
+    parsed->type = SYNC_REPLY_INVALID;
+    parsed->invalid.errmsg = errmsg;
+}
+
 
 /* +XFULLRESYNC GTID.LOST <gtid.lost> MASTER.UUID <master-uuid>
  * REPLID <replid> REPLOFF <reploff> */
@@ -1191,6 +1301,8 @@ static parsedSyncReply *parseSyncReply(sds reply) {
         parseSyncReplyFullresync(reply,parsed);
     } else if (!strncmp(reply,"+CONTINUE",9)) {
         parseSyncReplyContinue(reply,parsed);
+    } else if(!strncmp(reply, "+RDBCHANNELSYNC",15)) {
+        parseSyncReplyRdbchannelsync(reply,parsed);
     } else if (!strncmp(reply,"-NOMASTERLINK",13) ||
         !strncmp(reply,"-LOADING",8)) {
         parsed->type = SYNC_REPLY_TRANSERR;
@@ -1227,6 +1339,10 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
         serverReplStreamMasterLinkBroken();
         result = PSYNC_TRY_LATER;
         goto end;
+    }
+
+    if (parsed->type == SYNC_REPLY_RDBCHANNELSYNC) {
+        goto by_redis;
     }
 
     if (server.repl_mode->mode != REPL_MODE_XSYNC) {
@@ -1365,7 +1481,7 @@ int gtidTest(int argc, char **argv, int accurate) {
 
     int error = 0;
     server.maxmemory_policy = MAXMEMORY_FLAG_LFU;
-    if (!server.logfile) server.logfile = zstrdup(CONFIG_DEFAULT_LOGFILE);
+    if (!server.logfile) server.logfile = zstrdup("");
 
     TEST("gtid - parse xsync request") {
         syncRequest *request = syncRequestNew();

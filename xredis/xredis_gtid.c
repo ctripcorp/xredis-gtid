@@ -168,7 +168,7 @@ void gtidCommand(client *c) {
     c->argv = newargv;
 
     struct redisCommand* orig_cmd = c->cmd, *orig_lastcmd = c->lastcmd;
-    c->cmd = c->lastcmd = lookupCommand(c->argv[0]->ptr);
+    c->cmd = c->lastcmd = lookupCommand(c->argv, c->argc);
     if (!c->cmd) {
         sds args = sdsempty();
         int i;
@@ -183,9 +183,9 @@ void gtidCommand(client *c) {
     } else if ((c->cmd->arity > 0 && c->cmd->arity != c->argc) ||
                (c->argc < -c->cmd->arity)) {
         serverLog(LL_WARNING,"wrong number of arguments for '%s' command",
-            c->cmd->name);
+            c->cmd->fullname);
         rejectCommandFormat(c,"wrong number of arguments for '%s' command",
-            c->cmd->name);
+            c->cmd->fullname);
         goto end;
     }
 
@@ -252,8 +252,8 @@ static inline int isWrongTypeErrorReply(const char *s, size_t len) {
         return 0;
 }
 
-void ctrip_afterErrorReply(client *c, const char *s, size_t len) {
-    afterErrorReply(c,s,len);
+void ctrip_afterErrorReply(client *c, const char *s, size_t len, int flags) {
+    afterErrorReply(c,s,len, flags);
     if (server.repl_mode->mode != REPL_MODE_XSYNC) return;
     /* Replica sending wrong type error to master indicates data
      * inconsistent, * force fullresync to fix it. */
@@ -323,48 +323,49 @@ sds genGtidInfoString(sds info) {
 
     const char *master_uuid = getMasterUuid(NULL);
     info  = sdscatprintf(info,
-            "gtid_uuid:%s\r\n"
-            "gtid_master_uuid:%s\r\n"
-            "gtid_set:%s\r\n"
-            "gtid_executed:%s\r\n"
-            "gtid_executed_gno_count:%lld\r\n"
-            "gtid_executed_used_memory:%lu\r\n"
-            "gtid_lost:%s\r\n"
-            "gtid_lost_gno_count:%lld\r\n"
-            "gtid_lost_used_memory:%lu\r\n"
-            "gtid_repl_mode:%s\r\n"
-            "gtid_repl_from:%lld\r\n"
-            "gtid_repl_detail:%s\r\n"
-            "gtid_prev_repl_mode:%s\r\n"
-            "gtid_prev_repl_from:%lld\r\n"
-            "gtid_prev_repl_detail:%s\r\n"
-            "gtid_reploff_delta:%lld\r\n"
-            "gtid_master_repl_offset:%lld\r\n"
-            "gtid_uuid_interested:%s\r\n"
-            "gtid_xsync_fullresync_indicator:%lld\r\n"
-            "gtid_executed_cmd_count:%lld\r\n"
-            "gtid_ignored_cmd_count:%lld\r\n",
-            server.uuid,
-            master_uuid,
-            gtid_set_repr,
-            gtid_executed_repr,
-            executed_stat.gno_count,
-            executed_stat.used_memory,
-            gtid_lost_repr,
-            lost_stat.gno_count,
-            lost_stat.used_memory,
-            replModeName(server.repl_mode->mode),
-            server.repl_mode->from,
-            serverReplModeGetCurDetail(),
-            replModeName(server.prev_repl_mode->mode),
-            server.prev_repl_mode->from,
-            serverReplModeGetPrevDetail(),
-            server.gtid_reploff_delta,
-            server.master_repl_offset,
-            server.gtid_uuid_interested,
-            server.gtid_xsync_fullresync_indicator,
-            server.gtid_executed_cmd_count,
-            server.gtid_ignored_cmd_count);
+        "gtid_uuid:%s\r\n"
+        "gtid_master_uuid:%s\r\n"
+        "gtid_set:%s\r\n"
+        "gtid_executed:%s\r\n"
+        "gtid_executed_gno_count:%lld\r\n"
+        "gtid_executed_used_memory:%lu\r\n"
+        "gtid_lost:%s\r\n"
+        "gtid_lost_gno_count:%lld\r\n"
+        "gtid_lost_used_memory:%lu\r\n"
+        "gtid_repl_mode:%s\r\n"
+        "gtid_repl_from:%lld\r\n"
+        "gtid_repl_detail:%s\r\n"
+        "gtid_prev_repl_mode:%s\r\n"
+        "gtid_prev_repl_from:%lld\r\n"
+        "gtid_prev_repl_detail:%s\r\n"
+        "gtid_reploff_delta:%lld\r\n"
+        "gtid_master_repl_offset:%lld\r\n"
+        "gtid_uuid_interested:%s\r\n"
+        "gtid_xsync_fullresync_indicator:%lld\r\n"
+        "gtid_executed_cmd_count:%lld\r\n"
+        "gtid_ignored_cmd_count:%lld\r\n",
+        server.uuid,
+        master_uuid,
+        gtid_set_repr,
+        gtid_executed_repr,
+        executed_stat.gno_count,
+        executed_stat.used_memory,
+        gtid_lost_repr,
+        lost_stat.gno_count,
+        lost_stat.used_memory,
+        replModeName(server.repl_mode->mode),
+        server.repl_mode->from,
+        serverReplModeGetCurDetail(),
+        replModeName(server.prev_repl_mode->mode),
+        server.prev_repl_mode->from,
+        serverReplModeGetPrevDetail(),
+        server.gtid_reploff_delta,
+        server.master_repl_offset,
+        server.gtid_uuid_interested,
+        server.gtid_xsync_fullresync_indicator,
+        server.gtid_executed_cmd_count,
+        server.gtid_ignored_cmd_count
+    );
 
     sdsfree(gtid_set_repr);
     sdsfree(gtid_executed_repr);
@@ -538,6 +539,7 @@ void gtidxCommand(client *c) {
                 gtidSet *gtid_req = NULL,*gtid_cont = NULL;
                 gtid_req = gtidSetDecode(gtidrepr,sdslen(gtidrepr));
                 if (c->argc > 4) getLongLongFromObject(c->argv[4],&blmaxlen);
+                serverLog(LL_WARNING, "blmaxlen=%lld", blmaxlen);
                 blbuf = zcalloc(blmaxlen);
                 long long offset = gtidSeqXsync(server.gtid_seq,gtid_req,&gtid_cont);
                 size_t maxlen = gtidSetEstimatedEncodeBufferSize(gtid_cont);

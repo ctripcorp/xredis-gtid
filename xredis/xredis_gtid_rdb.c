@@ -101,7 +101,6 @@ err:
 int loadInfoAuxFieldsGtid(robj* key, robj* val, rdbSaveInfo *rsi) {
     rdbSaveInfoGtid *gtid_rsi = NULL;
     if (rsi) gtid_rsi = rsi->gtid;
-
     if (!strcasecmp(key->ptr, GTID_AUX_REPL_MODE)) {
         serverAssert(gtid_rsi == NULL);
         int repl_mode;
