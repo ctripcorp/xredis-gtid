@@ -48,6 +48,13 @@ proc gtid_set_is_equal {repr1  repr2} {
     }
 }
 
+proc press_enter_to_continue {{message "Hit Enter to continue ==> "}} {
+    puts -nonewline $message
+    flush stdout
+    gets stdin
+}
+
+
 proc wait_for_gtid_sync {r1 r2} {
     wait_for_condition 500 100 {
         [gtid_set_is_equal [status $r1 gtid_set] [status $r2 gtid_set] ]

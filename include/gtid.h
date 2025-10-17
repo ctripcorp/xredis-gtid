@@ -183,6 +183,7 @@ typedef struct gtidSeqStat {
 } gtidSeqStat;
 
 gtidSeq *gtidSeqCreate();
+void gtidSeqRebaseOffset(gtidSeq *seq, const char *uuid, size_t uuid_len, size_t offset);
 void gtidSeqDestroy(gtidSeq *seq);
 void gtidSeqAppend(gtidSeq *seq, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
 void gtidSeqTrim(gtidSeq *seq, long long until);

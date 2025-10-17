@@ -144,16 +144,16 @@ typedef struct propagateArgs {
     long long offset;
 } propagateArgs;
 
-void propagateArgsInit(propagateArgs *pargs, struct redisCommand *cmd, int dbid, robj **argv, int argc);
+void propagateArgsInit(propagateArgs *pargs, int dbid, robj **argv, int argc);
 void propagateArgsPrepareToFeed(propagateArgs *pargs);
 void propagateArgsDeinit(propagateArgs *pargs);
 
 void ctrip_createReplicationBacklog(void);
-void ctrip_resizeReplicationBacklog(long long newsize);
+void ctrip_resizeReplicationBacklog();
 void ctrip_freeReplicationBacklog(void);
 void ctrip_replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
-void ctrip_replicationFeedSlavesFromMasterStream(list *slaves, char *buf, size_t buflen, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
-void ctrip_feedAppendOnlyFile(struct redisCommand *cmd, int dictid, robj **argv, int argc);
+void ctrip_replicationFeedSlavesFromMasterStream(char *buf, size_t buflen, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
+void ctrip_feedAppendOnlyFile(int dictid, robj **argv, int argc);
 
 typedef struct gtidInitialInfo {
   gtidSet *gtid_lost;
@@ -199,6 +199,7 @@ int loadInfoAuxFieldsGtid(robj* key, robj* val, rdbSaveInfo *rsi);
 #define PSYNC_FULLRESYNC 3
 #define PSYNC_NOT_SUPPORTED 4
 #define PSYNC_TRY_LATER 5
+#define PSYNC_FULLRESYNC_RDBCHANNEL 6
 
 #define GTID_SHIFT_REPL_STREAM_DISCARD_CACHED_MASTER    (1<<0)
 #define GTID_SHIFT_REPL_STREAM_NOTIFY_SLAVES            (1<<1)
@@ -207,19 +208,21 @@ int loadInfoAuxFieldsGtid(robj* key, robj* val, rdbSaveInfo *rsi);
 #define GTID_XSYNC_UUID_INTERESTED_DEFAULT      "*"
 #define GTID_XSYNC_UUID_INTERESTED_FULLRESYNC   "?"
 
-#define GTID_SYNC_PSYNC_FULLRESYNC  0
-#define GTID_SYNC_PSYNC_CONTINUE    1
-#define GTID_SYNC_PSYNC_XFULLRESYNC 2
-#define GTID_SYNC_PSYNC_XCONTINUE   3
-#define GTID_SYNC_XSYNC_FULLRESYNC  4
-#define GTID_SYNC_XSYNC_CONTINUE    5
-#define GTID_SYNC_XSYNC_XFULLRESYNC 6
-#define GTID_SYNC_XSYNC_XCONTINUE   7
-#define GTID_SYNC_TYPES             8
+#define GTID_SYNC_PSYNC_FULLRESYNC      0
+#define GTID_SYNC_PSYNC_CONTINUE        1
+#define GTID_SYNC_PSYNC_XFULLRESYNC     2
+#define GTID_SYNC_PSYNC_XCONTINUE       3
+#define GTID_SYNC_PSYNC_RDBCHANNELSYNC  4
+#define GTID_SYNC_XSYNC_FULLRESYNC      5
+#define GTID_SYNC_XSYNC_CONTINUE        6
+#define GTID_SYNC_XSYNC_XFULLRESYNC     7
+#define GTID_SYNC_XSYNC_XCONTINUE       8
+#define GTID_SYNC_XSYNC_RDBCHANNELSYNC  9 
+#define GTID_SYNC_TYPES                 10
 
 static inline const char *gtidSyncTypeName(int type) {
   const char *name = "?";
-  const char *types[] = {"psync_fullresync","psync_continue","psync_xfullresync","psync_xcontinue","xsync_fullresync","xsync_continue","xsync_xfullresync","xsync_xcontinue"};
+  const char *types[] = {"psync_fullresync","psync_continue","psync_xfullresync","psync_xcontinue","psync_rdbchannelsync","xsync_fullresync","xsync_continue","xsync_xfullresync","xsync_xcontinue","xsync_rdbchannelsync"};
   if (type >= 0 && type < GTID_SYNC_TYPES)
     name = types[type];
   return name;
@@ -235,12 +238,12 @@ void gtidCommand(client *c);
 void gtidxCommand(client *c);
 char *ctrip_receiveSynchronousResponse(connection *conn);
 int ctrip_replicationSetupSlaveForFullResync(client *slave, long long offset);
-int ctrip_masterTryPartialResynchronization(client *c);
+int ctrip_masterTryPartialResynchronization(client *c, long long psync_offset);
 int ctrip_addReplyReplicationBacklog(client *c, long long offset, long long *added);
 int ctrip_slaveTryPartialResynchronizationWrite(connection *conn);
 int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply);
-void ctrip_afterErrorReply(client *c, const char *s, size_t len);
-
+void ctrip_afterErrorReply(client *c, const char *s, size_t len, int flags);
+sds sendXsyncCommand(connection *conn);
 
 /* Expose functions that used by gtid */
 void createReplicationBacklog(void);
@@ -248,11 +251,11 @@ char *sendCommand(connection *conn, ...);
 int cancelReplicationHandshake(int reconnect);
 void replicationDiscardCachedMaster(void);
 void replicationCreateMasterClient(connection *conn, int dbid);
+//LATTE_TO_DO
 void aofRewriteBufferAppend(unsigned char *s, unsigned long len);
-int masterTryPartialResynchronization(client *c);
+int masterTryPartialResynchronization(client *c,long long psync_offset);
 sds catAppendOnlyGenericCommand(sds dst, int argc, robj **argv);
 long long addReplyReplicationBacklog(client *c, long long offset);
-void afterErrorReply(client *c, const char *s, size_t len);
 ssize_t rdbSaveAuxField(rio *rdb, void *key, size_t keylen, void *val, size_t vallen);
 
 int gtidTest(int argc, char **argv, int accurate);
