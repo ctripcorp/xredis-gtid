@@ -112,6 +112,7 @@ typedef struct syncRequest {
         struct {
             sds uuid_interested;
             gtidSet *gtid_slave;
+            gtidSet *gtid_lost;
             long long maxgap;
         } x; /* xsync */
         struct {
@@ -135,6 +136,7 @@ void syncRequestFree(syncRequest *request) {
     case REPL_MODE_XSYNC:
         sdsfree(request->x.uuid_interested);
         gtidSetFree(request->x.gtid_slave);
+        gtidSetFree(request->x.gtid_lost);
         break;
     case REPL_MODE_UNSET:
         sdsfree(request->i.msg);
@@ -161,7 +163,7 @@ void masterParsePsyncRequest(syncRequest *request, robj *replid, robj *offset) {
 void masterParseXsyncRequest(syncRequest *request, robj *uuid, robj *gtidset,
         int optargc, robj **optargv) {
     long long maxgap = 0;
-    gtidSet *gtid_slave = NULL;
+    gtidSet *gtid_slave = NULL, *gtid_lost = NULL;
     sds gtid_repr = gtidset->ptr, msg = NULL;
 
     if ((gtid_slave = gtidSetDecode(gtid_repr,sdslen(gtid_repr))) == NULL) {
@@ -176,6 +178,13 @@ void masterParseXsyncRequest(syncRequest *request, robj *uuid, robj *gtidset,
                 serverLog(LL_NOTICE, "Ignored invalid xsync maxgap option: %s",
                         (sds)optargv[i+1]->ptr);
             }
+        } else if (!strcasecmp(optargv[i]->ptr,"gtid.lost")) {
+            if ((gtid_lost = gtidSetDecode(optargv[i+1]->ptr,
+                            sdslen(optargv[i+1]->ptr))) == NULL) {
+                serverLog(LL_WARNING, "Invalid xsync gtid.lost option: %s",
+                        (sds)optargv[i+1]->ptr);
+                goto invalid;
+            }
         } else {
             serverLog(LL_NOTICE, "Ignored invalid xsync option %s",
                     (sds)optargv[i]->ptr);
@@ -184,12 +193,18 @@ void masterParseXsyncRequest(syncRequest *request, robj *uuid, robj *gtidset,
 
     request->mode = REPL_MODE_XSYNC;
     request->x.gtid_slave = gtid_slave;
+    request->x.gtid_lost = gtid_lost;
+    if (request->x.gtid_lost == NULL) {
+        serverLog(LL_NOTICE, "gtid.lost unspecified, default to empty");
+        request->x.gtid_lost = gtidSetNew();
+    }
     request->x.maxgap = maxgap;
     request->x.uuid_interested = sdsnew(uuid->ptr);
     return;
 
 invalid:
     if (gtid_slave) gtidSetFree(gtid_slave);
+    if (gtid_lost) gtidSetFree(gtid_lost);
     request->mode = REPL_MODE_UNSET;
     request->i.msg = msg;
     return;
@@ -382,10 +397,15 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
     long long psync_offset, maxgap = request->x.maxgap;
     gtidSet *gtid_slave = request->x.gtid_slave;
     gtidSet *gtid_master = NULL, *gtid_cont = NULL, *gtid_xsync = NULL,
-            *gtid_gap = NULL, *gtid_mlost = NULL, *gtid_slost = NULL;
+            *gtid_gap = NULL, *gtid_mlost = NULL, *gtid_slost = NULL,
+            *gtid_mexec = NULL, *gtid_sexec = NULL,
+            *gtid_mexec_gap = NULL, *gtid_sexec_gap = NULL;
     sds gtid_master_repr = NULL, gtid_continue_repr = NULL,
         gtid_xsync_repr = NULL, gtid_slave_repr = NULL,
-        gtid_mlost_repr = NULL, gtid_slost_repr = NULL;
+        gtid_mlost_repr = NULL, gtid_slost_repr = NULL,
+        gtid_mexec_repr = NULL, gtid_sexec_repr = NULL,
+        gtid_mgap_repr = NULL, gtid_sgap_repr = NULL,
+        gtid_lost_repr = NULL, gtid_executed_repr = NULL;
 
     syncLocateResultInit(&slr);
 
@@ -469,7 +489,40 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
             " gtid.set-slave(%s) - gtid.set-continue(%s)",
             gtid_mlost_repr,gtid_slave_repr,gtid_continue_repr);
 
-    gno_t gap = gtidSetCount(gtid_mlost) + gtidSetCount(gtid_slost);
+    gtid_executed_repr = gtidSetDump(server.gtid_executed);
+
+    gtid_mexec = gtidSetDup(server.gtid_executed);
+    gtidSetDiff(gtid_mexec, gtid_xsync);
+
+    gtid_mexec_repr = gtidSetDump(gtid_mexec);
+    serverLog(LL_NOTICE, "[xsync] [ana] gtid.set-mexec(%s) ="
+            " gtid.set-executed(%s) - gtid.set-xsync(%s)",
+            gtid_mexec_repr,gtid_executed_repr,gtid_xsync_repr);
+
+    gtid_lost_repr = gtidSetDump(request->x.gtid_lost);
+
+    gtid_sexec = gtidSetDup(gtid_slave);
+    gtidSetDiff(gtid_sexec, request->x.gtid_lost);
+    gtid_sexec_repr = gtidSetDump(gtid_sexec);
+    serverLog(LL_NOTICE, "[xsync] [ana] gtid.set-sexec(%s) ="
+            " gtid.set-slave(%s) - gtid.set-lost(%s)",
+            gtid_sexec_repr, gtid_slave_repr, gtid_lost_repr);
+
+    gtid_mexec_gap = gtidSetDup(gtid_mexec);
+    gtidSetDiff(gtid_mexec_gap,gtid_sexec);
+    gtid_mgap_repr = gtidSetDump(gtid_mexec_gap);
+    serverLog(LL_NOTICE, "[xsync] [ana] gtid.set-mgap(%s) ="
+            " gtid.set-mexec(%s) - gtid.set-sexec(%s)",
+            gtid_mgap_repr, gtid_mexec_repr, gtid_sexec_repr);
+
+    gtid_sexec_gap = gtidSetDup(gtid_sexec);
+    gtidSetDiff(gtid_sexec_gap,gtid_mexec);
+    gtid_sgap_repr = gtidSetDump(gtid_sexec_gap);
+    serverLog(LL_NOTICE, "[xsync] [ana] gtid.set-sgap(%s) ="
+            " gtid.set-sexec(%s) - gtid.set-mexec(%s)",
+            gtid_sgap_repr, gtid_sexec_repr, gtid_mexec_repr);
+
+    gno_t gap = gtidSetCount(gtid_mexec_gap) + gtidSetCount(gtid_sexec_gap);
     if (gap > maxgap) {
         result->action = SYNC_ACTION_FULL;
         result->msg = sdscatprintf(sdsempty(), "gap=%lld > maxgap=%lld",
@@ -509,9 +562,14 @@ end:
     sdsfree(gtid_master_repr), sdsfree(gtid_continue_repr);
     sdsfree(gtid_xsync_repr), sdsfree(gtid_slave_repr);
     sdsfree(gtid_mlost_repr), sdsfree(gtid_slost_repr);
+    sdsfree(gtid_mexec_repr), sdsfree(gtid_sexec_repr);
+    sdsfree(gtid_mgap_repr), sdsfree(gtid_sgap_repr);
+    sdsfree(gtid_lost_repr);
 
     gtidSetFree(gtid_master), gtidSetFree(gtid_cont), gtidSetFree(gtid_xsync);
     gtidSetFree(gtid_gap), gtidSetFree(gtid_mlost), gtidSetFree(gtid_slost);
+    gtidSetFree(gtid_mexec), gtidSetFree(gtid_sexec);
+    gtidSetFree(gtid_mexec_gap), gtidSetFree(gtid_sexec_gap);
 }
 
 syncResult *masterAnaSyncRequest(syncRequest *request) {
@@ -730,7 +788,7 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
     gtidSet *gtid_slave = NULL;
     char maxgap[32];
     int result = PSYNC_WAIT_REPLY;
-    sds gtid_slave_repr;
+    sds gtid_slave_repr, gtid_lost_repr;
 
     serverLog(LL_NOTICE, "[gtid] Trying parital sync in (%s) mode.",
             replModeName(server.repl_mode->mode));
@@ -739,15 +797,16 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
 
     gtid_slave = serverGtidSetGet("[xsync]");
     gtid_slave_repr = gtidSetDump(gtid_slave);
+    gtid_lost_repr = gtidSetDump(server.gtid_lost);
     const char *uuid_interested = xsyncUuidInterestedGet();
 
     snprintf(maxgap,sizeof(maxgap),"%lld",server.gtid_xsync_max_gap);
     serverLog(LL_NOTICE, "[xsync] Trying partial xsync with "
-            "uuid_interested=%s, gtid.set=%s, maxgap=%s",
-            uuid_interested,gtid_slave_repr,maxgap);
+            "uuid_interested=%s, gtid.set=%s, gtid.lost=%s, maxgap=%s",
+            uuid_interested,gtid_slave_repr,gtid_lost_repr,maxgap);
 
     sds reply = sendCommand(conn,"XSYNC",uuid_interested,
-            gtid_slave_repr,"MAXGAP",maxgap,NULL);
+            gtid_slave_repr,"GTID.LOST",gtid_lost_repr,"MAXGAP",maxgap,NULL);
     if (reply != NULL) {
         serverLog(LL_WARNING,"[xsync] Unable to send XSYNC: %s", reply);
         sdsfree(reply);
@@ -757,6 +816,7 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
 
     gtidSetFree(gtid_slave);
     sdsfree(gtid_slave_repr);
+    sdsfree(gtid_lost_repr);
 
     return result;
 }
@@ -1301,17 +1361,22 @@ int gtidTest(int argc, char **argv, int accurate) {
 
     TEST("gtid - parse xsync request") {
         syncRequest *request = syncRequestNew();
-        robj *optargv[2];
+        robj *optargv[4];
         robj *gtidset = createStringObject("A:1-100,B", 9);
         robj *uuid_interested = createStringObject("*",1);
-        optargv[0] = createStringObject("MAXGAP",6);
-        optargv[1] = createStringObject("10000", 5);
-        masterParseXsyncRequest(request,uuid_interested,gtidset,2,optargv);
+        optargv[0] = createStringObject("GTID.LOST",9);
+        optargv[1] = createStringObject("A:81-100", 8);
+        optargv[2] = createStringObject("MAXGAP",6);
+        optargv[3] = createStringObject("10000", 5);
+        masterParseXsyncRequest(request,uuid_interested,gtidset,4,optargv);
         test_assert(request->mode == REPL_MODE_XSYNC);
         test_assert(request->x.maxgap == 10000);
         test_assert(gtidSetCount(request->x.gtid_slave) == 100);
+        test_assert(gtidSetCount(request->x.gtid_lost) == 20);
         decrRefCount(optargv[0]);
         decrRefCount(optargv[1]);
+        decrRefCount(optargv[2]);
+        decrRefCount(optargv[3]);
         decrRefCount(gtidset);
         decrRefCount(uuid_interested);
         syncRequestFree(request);

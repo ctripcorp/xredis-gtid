@@ -530,7 +530,7 @@ void serverReplStreamUpdateXsync(gtidSet *delta_lost, client *trigger_slave,
     }
 
     myreploff = ctrip_getMasterReploff();
-    if (reploff > 0 && reploff != myreploff) {
+    if (reploff >= 0 && reploff != myreploff) {
         serverAssert(from_master && mode == REPL_MODE_XSYNC);
         ctrip_setMasterReploff(reploff);
         serverLog(LL_NOTICE, "[gtid] master reploff updated: %lld => %lld",
