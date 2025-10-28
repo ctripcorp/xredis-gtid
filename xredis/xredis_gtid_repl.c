@@ -564,7 +564,7 @@ end:
     sdsfree(gtid_mlost_repr), sdsfree(gtid_slost_repr);
     sdsfree(gtid_mexec_repr), sdsfree(gtid_sexec_repr);
     sdsfree(gtid_mgap_repr), sdsfree(gtid_sgap_repr);
-    sdsfree(gtid_lost_repr);
+    sdsfree(gtid_lost_repr), sdsfree(gtid_executed_repr);
 
     gtidSetFree(gtid_master), gtidSetFree(gtid_cont), gtidSetFree(gtid_xsync);
     gtidSetFree(gtid_gap), gtidSetFree(gtid_mlost), gtidSetFree(gtid_slost);
