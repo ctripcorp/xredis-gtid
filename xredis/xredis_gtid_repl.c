@@ -29,7 +29,7 @@
 #include "server.h"
 #include <gtid.h>
 #include <ctype.h>
-
+#define MAX(a, b)	(a) < (b) ? (b) : (a)
 int replicationSetupSlaveForXFullResync(client *slave, long long offset) {
     int ret = C_OK;
     sds gtid_lost_repr = NULL, repr = NULL;
@@ -430,12 +430,12 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
             serverLog(LL_NOTICE, "[xsync] [ana] continue point adjust to"
                     " backlog tail: offset=%lld", psync_offset);
         } else {
-            psync_offset = server.repl_mode->from;
+            psync_offset = MAX(server.repl_backlog_off, server.repl_mode->from);
             serverLog(LL_NOTICE, "[xsync] [ana] continue point adjust to"
                     " psync from: offset=%lld", psync_offset);
         }
     }
-
+    serverAssert(psync_offset >= server.repl_backlog_off);
     result->offset = psync_offset;
     locateServerReplMode(REPL_MODE_XSYNC,psync_offset,&slr);
 
@@ -610,7 +610,7 @@ void masterSetupPartialSynchronization(client *c, long long offset,
         freeClientAsync(c);
         return;
     }
-
+    serverAssert(offset >= server.repl_backlog_off);
     if (limit > 0) {
         sent = addReplyReplicationBacklogLimited(c,offset,limit);
     } else {
