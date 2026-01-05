@@ -29,7 +29,7 @@
 #include "server.h"
 #include <gtid.h>
 #include <ctype.h>
-
+#define MAX(a, b)	(a) < (b) ? (b) : (a)
 int replicationSetupSlaveForXFullResync(client *slave, long long offset) {
     int ret = C_OK;
     sds gtid_lost_repr = NULL, repr = NULL;
@@ -455,6 +455,7 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
                     " psync from: offset=%lld", psync_offset);
         }
     }
+
     if (server.repl_mode->mode == REPL_MODE_PSYNC && psync_offset < server.repl_backlog_off) {
         result->action = SYNC_ACTION_FULL;
         result->msg = result->msg = sdscatprintf(sdsempty(),
