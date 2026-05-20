@@ -85,7 +85,7 @@ void propagateArgsPrepareToFeed(propagateArgs *pargs) {
             !server.gtid_enabled ||
             pargs->orig_cmd->proc == gtidCommand ||
             pargs->orig_cmd->proc == publishCommand ||
-            (server.propagate_in_transaction &&
+            (server.gtid_dbid_at_multi >= 0 &&
              pargs->orig_cmd != server.execCommand)) {
         cmd = pargs->orig_cmd;
         argc = pargs->orig_argc;
@@ -726,4 +726,3 @@ void serverReplStreamReset2Xsync(sds replid, long long reploff,
     serverGtidSetResetExecuted(gtidSetDup(gtid_executed));
     serverGtidSetResetLost(gtidSetDup(gtid_lost));
 }
-
