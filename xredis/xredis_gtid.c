@@ -187,6 +187,16 @@ void gtidCommand(client *c) {
         rejectCommandFormat(c,"wrong number of arguments for '%s' command",
             c->cmd->name);
         goto end;
+    } else if (c->cmd->flags & CMD_READONLY) {
+           /* Read-only command: skip recording the GTID.
+            * dirty=0 prevents call() from adding the outer GTID to also_propagate, so it
+            * will never reach slaves.  Recording it only on master creates a GTID-set
+            * divergence. */
+        serverLog(LL_WARNING,"'%s' command is not permitted to be embedded in gtid command",
+            c->cmd->name);
+        rejectCommandFormat(c,"'%s' command is not permitted to be embedded in gtid command",
+            c->cmd->name);
+        goto end;
     }
 
     c->cmd->proc(c);
