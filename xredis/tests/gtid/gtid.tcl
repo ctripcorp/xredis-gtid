@@ -394,6 +394,15 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
             assert_match "ERR wrong number of arguments for 'gtid' command" $error
         }
 
+        test "GTID wrapping read-only command is rejected" {
+            r set rokey roval
+            set gtid_before [status r gtid_set]
+            catch {r GTID B:1 $::target_db GET rokey} err
+            assert_match "*is not permitted to be embedded in gtid command*" $err
+            # GTID must NOT be recorded
+            assert_equal [status r gtid_set] $gtid_before
+        }
+
     }
 
     test {INFO GTID} {
