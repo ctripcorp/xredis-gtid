@@ -121,6 +121,11 @@ void serverGtidSetRemoveExecuted(gtidSet *delta_executed) {
  *          a. fail (clean queue)
  */
 void gtidCommand(client *c) {
+    if (!mustObeyClient(c)) {
+        addReplyError(c,"gtid command is only allowed from replication or AOF clients");
+        return;
+    }
+
     sds gtid = c->argv[1]->ptr;
     long long gno = 0;
     size_t uuid_len = 0;
