@@ -879,7 +879,7 @@ int test_uuidSetNextEncode() {
     next_len = uuidSetNextEncode(next, maxlen, B, 1);
     next[next_len] = '\0';
     long long gno = 0;
-    int sid_len = 0;
+    size_t sid_len = 0;
     uuidGnoDecode(next, next_len, &gno, &sid_len);
     assert(strcmp("B:27", next) == 0);
     assert(gno == 27);
@@ -1100,7 +1100,7 @@ int test_gtidSetAdd() {
 
 int test_uuidGnoDecode() {
     long long gno = 0;
-    int uuid_index = 0;
+    size_t uuid_index = 0;
     char* uuid = uuidGnoDecode("ABCD:1", 6, &gno, &uuid_index);
     assert(uuid_index == 4);
     assert(strncmp(uuid, "ABCD", uuid_index) == 0);
@@ -1522,6 +1522,1013 @@ int test_gtidSeqPsync() {
     return 1;
 }
 
+int test_uuidSetIteratorNext() {
+    /* single interval */
+    uuidSet *us1 = uuidSetNew("uuid-1", 6);
+    uuidSetAdd(us1, 1, 5);
+
+    uuidSetIterator it1;
+    uuidSetInitIterator(&it1, us1);
+    int count = 0;
+    gno_t total = 0;
+    gtidIntervalNode *n;
+    while ((n = uuidSetIteratorNext(&it1)) != NULL) {
+        assert(n->start >= 1 && n->end <= 5);
+        total += (n->end - n->start + 1);
+        count++;
+    }
+    uuidSetDeinitIterator(&it1);
+    assert(count == 1);
+    assert(total == 5);
+
+    /* iteration past end returns NULL */
+    assert(uuidSetIteratorNext(&it1) == NULL);
+    uuidSetFree(us1);
+
+    /* multiple disjoint intervals (use gaps so they don't merge) */
+    uuidSet *us2 = uuidSetNew("uuid-2", 6);
+    uuidSetAdd(us2, 1, 3);
+    uuidSetAdd(us2, 10, 12);
+    uuidSetAdd(us2, 20, 22);
+
+    uuidSetIterator it2;
+    uuidSetInitIterator(&it2, us2);
+    gno_t seen[3][2];
+    int i = 0;
+    while ((n = uuidSetIteratorNext(&it2)) != NULL) {
+        assert(i < 3);
+        seen[i][0] = n->start;
+        seen[i][1] = n->end;
+        i++;
+    }
+    uuidSetDeinitIterator(&it2);
+    assert(i == 3);
+    assert(seen[0][0] == 1  && seen[0][1] == 3);
+    assert(seen[1][0] == 10 && seen[1][1] == 12);
+    assert(seen[2][0] == 20 && seen[2][1] == 22);
+
+    /* empty uuid set: init then immediately next should give NULL */
+    uuidSet *us3 = uuidSetNew("uuid-3", 6);
+    uuidSetIterator it3;
+    uuidSetInitIterator(&it3, us3);
+    assert(uuidSetIteratorNext(&it3) == NULL);
+    uuidSetDeinitIterator(&it3);
+    uuidSetFree(us3);
+
+    uuidSetFree(us2);
+    return 1;
+}
+
+int test_gtidSetIteratorNext() {
+    /* build a gtidSet with 3 uuidSets, each with one interval */
+    uuidSet *a = uuidSetNew("uuid-A", 6); uuidSetAdd(a, 1, 5);
+    uuidSet *b = uuidSetNew("uuid-B", 6); uuidSetAdd(b, 100, 100);
+    uuidSet *c = uuidSetNew("uuid-C", 6); uuidSetAdd(c, 7, 9);
+
+    gtidSet *gs = gtidSetNew();
+    gtidSetAppend(gs, a);
+    gtidSetAppend(gs, b);
+    gtidSetAppend(gs, c);
+
+    gtidSetIterator it;
+    gtidSetInitIterator(&it, gs);
+    uuidSet *picked[3];
+    int i = 0;
+    uuidSet *cur;
+    while ((cur = gtidSetIteratorNext(&it)) != NULL) {
+        assert(i < 3);
+        picked[i++] = cur;
+    }
+    gtidSetDeinitIterator(&it);
+    assert(i == 3);
+    /* iteration order should be insertion order: A, B, C */
+    assert(picked[0] == a);
+    assert(picked[1] == b);
+    assert(picked[2] == c);
+    /* uuid contents still readable through the picked pointers */
+    assert(picked[0]->uuid_len == 6 && memcmp(picked[0]->uuid, "uuid-A", 6) == 0);
+    assert(picked[1]->uuid_len == 6 && memcmp(picked[1]->uuid, "uuid-B", 6) == 0);
+    assert(picked[2]->uuid_len == 6 && memcmp(picked[2]->uuid, "uuid-C", 6) == 0);
+
+    /* past end returns NULL */
+    assert(gtidSetIteratorNext(&it) == NULL);
+    gtidSetDeinitIterator(&it);
+
+    /* empty gtidSet: iter is NULL right away */
+    gtidSet *empty = gtidSetNew();
+    gtidSetIterator it2;
+    gtidSetInitIterator(&it2, empty);
+    assert(gtidSetIteratorNext(&it2) == NULL);
+    gtidSetDeinitIterator(&it2);
+    gtidSetFree(empty);
+
+    /* gtidSetFree releases its uuidSets (don't double-free) */
+    gtidSetFree(gs);
+    return 1;
+}
+
+int test_uuidSetIteratorSeek() {
+    /* Multi-interval uuidSet: 1-3, 10-12, 20-22 */
+    uuidSet *us = uuidSetNew("uuid-seek", 9);
+    uuidSetAdd(us, 1, 3);
+    uuidSetAdd(us, 10, 12);
+    uuidSetAdd(us, 20, 22);
+
+    uuidSetIterator it;
+    gtidIntervalNode *n;
+
+    /* Seek to a value inside the first interval. */
+    uuidSetInitIterator(&it, us);
+    assert(uuidSetIteratorSeek(&it, 2) == 1);
+    n = uuidSetIteratorNext(&it);
+    assert(n->start == 1 && n->end == 3);
+    uuidSetDeinitIterator(&it);
+    uuidSetFree(us);
+
+    /* Seek to a value inside the second interval. */
+    us = uuidSetNew("uuid-seek", 9);
+    uuidSetAdd(us, 1, 3);
+    uuidSetAdd(us, 10, 12);
+    uuidSetAdd(us, 20, 22);
+    uuidSetInitIterator(&it, us);
+    assert(uuidSetIteratorSeek(&it, 11) == 1);
+    n = uuidSetIteratorNext(&it);
+    assert(n->start == 10 && n->end == 12);
+    /* Iteration continues from the third interval. */
+    n = uuidSetIteratorNext(&it);
+    assert(n->start == 20 && n->end == 22);
+    assert(uuidSetIteratorNext(&it) == NULL);
+    uuidSetDeinitIterator(&it);
+    uuidSetFree(us);
+
+    /* Seek to a gap (between intervals): positions at the next interval. */
+    us = uuidSetNew("uuid-seek", 9);
+    uuidSetAdd(us, 1, 3);
+    uuidSetAdd(us, 10, 12);
+    uuidSetAdd(us, 20, 22);
+    uuidSetInitIterator(&it, us);
+    assert(uuidSetIteratorSeek(&it, 7) == 1);
+    n = uuidSetIteratorNext(&it);
+    assert(n->start == 10 && n->end == 12);
+    uuidSetDeinitIterator(&it);
+    uuidSetFree(us);
+
+    /* Seek to a value past the last interval: returns 0, next yields NULL. */
+    us = uuidSetNew("uuid-seek", 9);
+    uuidSetAdd(us, 1, 3);
+    uuidSetAdd(us, 10, 12);
+    uuidSetAdd(us, 20, 22);
+    uuidSetInitIterator(&it, us);
+    assert(uuidSetIteratorSeek(&it, 100) == 0);
+    assert(uuidSetIteratorNext(&it) == NULL);
+    uuidSetDeinitIterator(&it);
+    uuidSetFree(us);
+
+    /* Empty uuidSet: Seek returns 0. */
+    us = uuidSetNew("uuid-seek", 9);
+    uuidSetInitIterator(&it, us);
+    assert(uuidSetIteratorSeek(&it, 1) == 0);
+    assert(uuidSetIteratorNext(&it) == NULL);
+    uuidSetDeinitIterator(&it);
+    uuidSetFree(us);
+
+    /* Continuous seeks within the same iterator instance. */
+    us = uuidSetNew("uuid-seek", 9);
+    uuidSetAdd(us, 1, 3);
+    uuidSetAdd(us, 10, 12);
+    uuidSetAdd(us, 20, 22);
+    uuidSetInitIterator(&it, us);
+    assert(uuidSetIteratorSeek(&it, 11) == 1);
+    n = uuidSetIteratorNext(&it);
+    assert(n->start == 10 && n->end == 12);
+    assert(uuidSetIteratorSeek(&it, 1) == 1);
+    n = uuidSetIteratorNext(&it);
+    assert(n->start == 1 && n->end == 3);
+    assert(uuidSetIteratorSeek(&it, 21) == 1);
+    n = uuidSetIteratorNext(&it);
+    assert(n->start == 20 && n->end == 22);
+    uuidSetDeinitIterator(&it);
+    uuidSetFree(us);
+
+    return 1;
+}
+
+int test_gtidSetIteratorSeek() {
+    /* Build a gtidSet with 3 uuidSets. */
+    uuidSet *a = uuidSetNew("uuid-A", 6); uuidSetAdd(a, 1, 5);
+    uuidSet *b = uuidSetNew("uuid-B", 6); uuidSetAdd(b, 100, 100);
+    uuidSet *c = uuidSetNew("uuid-C", 6); uuidSetAdd(c, 7, 9);
+
+    gtidSet *gs = gtidSetNew();
+    gtidSetAppend(gs, a);
+    gtidSetAppend(gs, b);
+    gtidSetAppend(gs, c);
+
+    /* Seek to a uuid that exists. */
+    gtidSetIterator it;
+    uuidSet *cur;
+    gtidSetInitIterator(&it, gs);
+    assert(gtidSetIteratorSeek(&it, "uuid-B", 6) == 1);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == b);
+    /* Iteration continues with the next uuidSet (uuid-C). */
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == c);
+    assert(gtidSetIteratorNext(&it) == NULL);
+    gtidSetDeinitIterator(&it);
+    gtidSetFree(gs);
+
+    /* Seek to the first uuid (uuid-A) and walk all. */
+    a = uuidSetNew("uuid-A", 6); uuidSetAdd(a, 1, 5);
+    b = uuidSetNew("uuid-B", 6); uuidSetAdd(b, 100, 100);
+    c = uuidSetNew("uuid-C", 6); uuidSetAdd(c, 7, 9);
+    gs = gtidSetNew();
+    gtidSetAppend(gs, a);
+    gtidSetAppend(gs, b);
+    gtidSetAppend(gs, c);
+
+    gtidSetInitIterator(&it, gs);
+    assert(gtidSetIteratorSeek(&it, "uuid-A", 6) == 1);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == a);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == b);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == c);
+    assert(gtidSetIteratorNext(&it) == NULL);
+    gtidSetDeinitIterator(&it);
+    gtidSetFree(gs);
+
+    /* Seek to the last uuid (uuid-C) - only C remains after. */
+    a = uuidSetNew("uuid-A", 6); uuidSetAdd(a, 1, 5);
+    b = uuidSetNew("uuid-B", 6); uuidSetAdd(b, 100, 100);
+    c = uuidSetNew("uuid-C", 6); uuidSetAdd(c, 7, 9);
+    gs = gtidSetNew();
+    gtidSetAppend(gs, a);
+    gtidSetAppend(gs, b);
+    gtidSetAppend(gs, c);
+
+    gtidSetInitIterator(&it, gs);
+    assert(gtidSetIteratorSeek(&it, "uuid-C", 6) == 1);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == c);
+    assert(gtidSetIteratorNext(&it) == NULL);
+    gtidSetDeinitIterator(&it);
+    gtidSetFree(gs);
+
+    /* Seek to a non-existent uuid: returns 0, next yields NULL. */
+    a = uuidSetNew("uuid-A", 6); uuidSetAdd(a, 1, 5);
+    b = uuidSetNew("uuid-B", 6); uuidSetAdd(b, 100, 100);
+    c = uuidSetNew("uuid-C", 6); uuidSetAdd(c, 7, 9);
+    gs = gtidSetNew();
+    gtidSetAppend(gs, a);
+    gtidSetAppend(gs, b);
+    gtidSetAppend(gs, c);
+
+    gtidSetInitIterator(&it, gs);
+    assert(gtidSetIteratorSeek(&it, "uuid-X", 6) == 0);
+    assert(gtidSetIteratorNext(&it) == NULL);
+    gtidSetDeinitIterator(&it);
+    gtidSetFree(gs);
+
+    /* Seek to a uuid that exists as a prefix of another but is not equal. */
+    a = uuidSetNew("uuid-AB", 7); uuidSetAdd(a, 1, 1);
+    b = uuidSetNew("uuid-ABC", 8); uuidSetAdd(b, 2, 2);
+    gs = gtidSetNew();
+    gtidSetAppend(gs, a);
+    gtidSetAppend(gs, b);
+
+    gtidSetInitIterator(&it, gs);
+    /* uuid-AB length 7 matches a. */
+    assert(gtidSetIteratorSeek(&it, "uuid-AB", 7) == 1);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == a);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == b);
+    /* uuid-AB length 6 should NOT match uuid-AB(7) nor uuid-ABC(8). */
+    assert(gtidSetIteratorSeek(&it, "uuid-A", 6) == 0);
+    assert(gtidSetIteratorNext(&it) == NULL);
+    gtidSetDeinitIterator(&it);
+    gtidSetFree(gs);
+
+    /* Empty gtidSet: Seek returns 0. */
+    gs = gtidSetNew();
+    gtidSetInitIterator(&it, gs);
+    assert(gtidSetIteratorSeek(&it, "uuid-A", 6) == 0);
+    assert(gtidSetIteratorNext(&it) == NULL);
+    gtidSetDeinitIterator(&it);
+    gtidSetFree(gs);
+
+    /* uuid == NULL: position at first uuidSet (or NULL if empty). */
+    a = uuidSetNew("uuid-A", 6); uuidSetAdd(a, 1, 5);
+    b = uuidSetNew("uuid-B", 6); uuidSetAdd(b, 100, 100);
+    gs = gtidSetNew();
+    gtidSetAppend(gs, a);
+    gtidSetAppend(gs, b);
+
+    gtidSetInitIterator(&it, gs);
+    assert(gtidSetIteratorSeek(&it, NULL, 0) == 1);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == a);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == b);
+    assert(gtidSetIteratorNext(&it) == NULL);
+    gtidSetDeinitIterator(&it);
+    gtidSetFree(gs);
+
+    /* Continuous seeks within the same iterator instance. */
+    a = uuidSetNew("uuid-A", 6); uuidSetAdd(a, 1, 5);
+    b = uuidSetNew("uuid-B", 6); uuidSetAdd(b, 100, 100);
+    c = uuidSetNew("uuid-C", 6); uuidSetAdd(c, 7, 9);
+    gs = gtidSetNew();
+    gtidSetAppend(gs, a);
+    gtidSetAppend(gs, b);
+    gtidSetAppend(gs, c);
+
+    gtidSetInitIterator(&it, gs);
+    assert(gtidSetIteratorSeek(&it, "uuid-C", 6) == 1);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == c);
+    /* Seek back to A: re-traverse from the start. */
+    assert(gtidSetIteratorSeek(&it, "uuid-A", 6) == 1);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == a);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == b);
+    cur = gtidSetIteratorNext(&it);
+    assert(cur == c);
+    assert(gtidSetIteratorNext(&it) == NULL);
+    gtidSetDeinitIterator(&it);
+    gtidSetFree(gs);
+
+    return 1;
+}
+
+/* ---- gtid_skiplist tests ---- */
+
+static void skiplistTestNoopFree(void *value) {
+    (void)value;
+}
+
+static void skiplistTestHeapFree(void *value) {
+    gtid_free(value);
+}
+
+static skipType skiplistTestType = {
+    .freeValue = skiplistTestNoopFree,
+};
+
+static skipType skiplistTestHeapType = {
+    .freeValue = skiplistTestHeapFree,
+};
+
+int test_skiplistNew() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    assert(sl != NULL);
+    assert(sl->header != NULL);
+    assert(sl->length == 0);
+    assert(sl->level == 1);
+    assert(sl->tail == NULL);
+    assert(sl->header->level[0].forward == NULL);
+    assert(sl->header->score == 0);
+    assert(sl->header->value == NULL);
+    assert(sl->header->backward == NULL);
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistEmpty() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    assert(skiplistFirst(sl) == NULL);
+    assert(skiplistFindFirstGte(sl, 0) == NULL);
+    assert(skiplistFindFirstGte(sl, 100) == NULL);
+    assert(skiplistDelete(sl, 10) == 0);
+    assert(sl->length == 0);
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistInsert() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    long long v1 = 100, v2 = 200, v3 = 300;
+
+    /* first insert: length 1, tail points to the node, no backward */
+    assert(skiplistInsert(sl, 10, &v1, 0) == 1);
+    assert(sl->length == 1);
+    assert(sl->tail != NULL);
+    assert(sl->tail->score == 10);
+    assert(sl->tail->value == &v1);
+    assert(sl->tail->backward == NULL);
+
+    /* insert smaller score: becomes new tail's backward, head unchanged */
+    assert(skiplistInsert(sl, 5, &v2, 0) == 1);
+    assert(sl->length == 2);
+    assert(sl->tail->score == 10);
+    assert(sl->tail->backward != NULL);
+    assert(sl->tail->backward->score == 5);
+    assert(sl->tail->backward->value == &v2);
+    assert(sl->tail->backward->backward == NULL);
+
+    /* insert larger score: becomes new tail */
+    assert(skiplistInsert(sl, 20, &v3, 0) == 1);
+    assert(sl->length == 3);
+    assert(sl->tail->score == 20);
+    assert(sl->tail->value == &v3);
+    assert(sl->tail->backward->score == 10);
+
+    /* skiplistFirst returns the smallest score */
+    skiplistNode *first = skiplistFirst(sl);
+    assert(first != NULL);
+    assert(first->score == 5);
+    assert(first->value == &v2);
+    assert(first->backward == NULL);
+    assert(first->level[0].forward->score == 10);
+    assert(first->level[0].forward->level[0].forward->score == 20);
+    assert(first->level[0].forward->level[0].forward->level[0].forward == NULL);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistInsertSortedOrder() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    long long values[5] = {1, 2, 3, 4, 5};
+    /* intentionally out of order */
+    long long scores[5] = {50, 20, 80, 10, 40};
+
+    for (int i = 0; i < 5; i++) {
+        assert(skiplistInsert(sl, scores[i], &values[i], 0) == 1);
+    }
+    assert(sl->length == 5);
+
+    /* Expected sorted order: 10, 20, 40, 50, 80 */
+    long long expected[5] = {10, 20, 40, 50, 80};
+    skiplistNode *node = skiplistFirst(sl);
+    for (int i = 0; i < 5; i++) {
+        assert(node != NULL);
+        assert(node->score == expected[i]);
+        assert(node->value == &values[i == 0 ? 3 :
+                                      i == 1 ? 1 :
+                                      i == 2 ? 4 :
+                                      i == 3 ? 0 : 2]);
+        node = node->level[0].forward;
+    }
+    assert(node == NULL);
+    assert(sl->tail->score == 80);
+    assert(sl->tail->value == &values[2]);
+    /* backward chain matches sorted order from tail back to first */
+    assert(sl->tail->backward->score == 50);
+    assert(sl->tail->backward->backward->score == 40);
+    assert(sl->tail->backward->backward->backward->score == 20);
+    assert(sl->tail->backward->backward->backward->backward->score == 10);
+    assert(sl->tail->backward->backward->backward->backward->backward == NULL);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistScoreUnique() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    long long v1 = 100, v2 = 200, v3 = 300;
+
+    /* score_unique=1: rejects duplicate score */
+    assert(skiplistInsert(sl, 10, &v1, 1) == 1);
+    assert(sl->length == 1);
+    assert(skiplistInsert(sl, 10, &v2, 1) == 0);
+    assert(sl->length == 1);
+    assert(skiplistFirst(sl)->value == &v1);
+
+    /* score_unique=0: allows duplicate score. New same-score nodes are
+     * inserted before existing same-score nodes, so skiplistFirst ends
+     * up pointing at the most recently inserted same-score node. */
+    assert(skiplistInsert(sl, 10, &v2, 0) == 1);
+    assert(sl->length == 2);
+    assert(skiplistInsert(sl, 10, &v3, 0) == 1);
+    assert(sl->length == 3);
+
+    /* skiplistFirst returns the most recently inserted same-score node */
+    assert(skiplistFirst(sl)->score == 10);
+    assert(skiplistFirst(sl)->value == &v3);
+
+    /* All three same-score nodes remain linked in the level-0 chain */
+    skiplistNode *node = skiplistFirst(sl);
+    assert(node->score == 10 && node->value == &v3);
+    assert(node->level[0].forward->score == 10 && node->level[0].forward->value == &v2);
+    assert(node->level[0].forward->level[0].forward->score == 10 &&
+           node->level[0].forward->level[0].forward->value == &v1);
+    assert(node->level[0].forward->level[0].forward->level[0].forward == NULL);
+    /* tail is the first inserted same-score node */
+    assert(sl->tail->score == 10);
+    assert(sl->tail->value == &v1);
+    /* backward chain: v1@10 <- v2@10 <- v3@10 */
+    assert(sl->tail->backward->value == &v2);
+    assert(sl->tail->backward->backward->value == &v3);
+    assert(sl->tail->backward->backward->backward == NULL);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistDelete() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    long long values[5] = {1, 2, 3, 4, 5};
+    long long scores[5] = {10, 20, 30, 40, 50};
+
+    for (int i = 0; i < 5; i++) {
+        skiplistInsert(sl, scores[i], &values[i], 0);
+    }
+    assert(sl->length == 5);
+    long long initial_level = sl->level;
+
+    /* delete middle: 30 */
+    assert(skiplistDelete(sl, 30) == 1);
+    assert(sl->length == 4);
+    skiplistNode *node = skiplistFirst(sl);
+    assert(node->score == 10);
+    assert(node->level[0].forward->score == 20);
+    assert(node->level[0].forward->level[0].forward->score == 40);
+    assert(node->level[0].forward->level[0].forward->level[0].forward->score == 50);
+    assert(node->level[0].forward->level[0].forward->level[0].forward->level[0].forward == NULL);
+    /* backward chain should still link 40 backward to 20 */
+    assert(node->level[0].forward->level[0].forward->backward->score == 20);
+    /* tail unchanged */
+    assert(sl->tail->score == 50);
+
+    /* delete head: 10 */
+    assert(skiplistDelete(sl, 10) == 1);
+    assert(sl->length == 3);
+    assert(skiplistFirst(sl)->score == 20);
+    assert(skiplistFirst(sl)->backward == NULL);
+
+    /* delete tail: 50, new tail becomes 40 */
+    assert(skiplistDelete(sl, 50) == 1);
+    assert(sl->length == 2);
+    assert(sl->tail->score == 40);
+    assert(sl->tail->backward->score == 20);
+    assert(sl->tail->backward->backward == NULL);
+
+    /* delete non-existent scores */
+    assert(skiplistDelete(sl, 100) == 0);
+    assert(sl->length == 2);
+    assert(skiplistDelete(sl, 30) == 0);
+    assert(sl->length == 2);
+    assert(skiplistDelete(sl, 5) == 0);
+    assert(sl->length == 2);
+
+    /* delete remaining: 20, 40 */
+    assert(skiplistDelete(sl, 20) == 1);
+    assert(sl->length == 1);
+    assert(sl->tail->score == 40);
+    assert(skiplistFirst(sl)->score == 40);
+    assert(skiplistDelete(sl, 40) == 1);
+    assert(sl->length == 0);
+    assert(sl->tail == NULL);
+    assert(skiplistFirst(sl) == NULL);
+    /* after emptying, level should shrink back to 1 */
+    assert(sl->level == 1);
+    assert(sl->level <= initial_level);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistDeleteOneNode() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    long long v = 42;
+    skiplistInsert(sl, 7, &v, 0);
+    assert(sl->length == 1);
+    assert(sl->tail != NULL);
+
+    /* deleting the only node should reset tail and keep sl->level >= 1 */
+    assert(skiplistDelete(sl, 7) == 1);
+    assert(sl->length == 0);
+    assert(sl->tail == NULL);
+    assert(skiplistFirst(sl) == NULL);
+    assert(sl->level == 1);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistFindFirstGte() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    long long values[5] = {1, 2, 3, 4, 5};
+    long long scores[5] = {10, 20, 30, 40, 50};
+
+    for (int i = 0; i < 5; i++) {
+        skiplistInsert(sl, scores[i], &values[i], 0);
+    }
+
+    /* exact match */
+    skiplistNode *node = skiplistFindFirstGte(sl, 10);
+    assert(node != NULL && node->score == 10);
+    node = skiplistFindFirstGte(sl, 30);
+    assert(node != NULL && node->score == 30);
+    node = skiplistFindFirstGte(sl, 50);
+    assert(node != NULL && node->score == 50);
+
+    /* target falls between two scores */
+    node = skiplistFindFirstGte(sl, 25);
+    assert(node != NULL && node->score == 30);
+    node = skiplistFindFirstGte(sl, 15);
+    assert(node != NULL && node->score == 20);
+    node = skiplistFindFirstGte(sl, 45);
+    assert(node != NULL && node->score == 50);
+
+    /* target less than smallest: returns the first node */
+    node = skiplistFindFirstGte(sl, 5);
+    assert(node != NULL && node->score == 10);
+    node = skiplistFindFirstGte(sl, LLONG_MIN);
+    assert(node != NULL && node->score == 10);
+
+    /* target greater than every score: returns NULL */
+    node = skiplistFindFirstGte(sl, 51);
+    assert(node == NULL);
+    node = skiplistFindFirstGte(sl, LLONG_MAX);
+    assert(node == NULL);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistFreeWithValues() {
+    /* Verify that freeValue is invoked for every stored value. With
+     * skiplistTestHeapType, every value is freed via gtid_free, so leaking
+     * a value (e.g. forgetting to free inside skiplistNodeFree) would be
+     * reported by ASan/valgrind at run time. */
+    skiplist *sl = skiplistCreate(&skiplistTestHeapType);
+    for (int i = 0; i < 5; i++) {
+        long long *v = gtid_malloc(sizeof(long long));
+        *v = i * 11;
+        assert(skiplistInsert(sl, i + 1, v, 0) == 1);
+    }
+    assert(sl->length == 5);
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistInsertAfterDelete() {
+    /* Insert / delete alternating sequence to exercise level promotion
+     * and demotion paths. */
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    long long values[10];
+    for (int i = 0; i < 10; i++) values[i] = i;
+
+    srandom(1234);
+    for (int i = 0; i < 10; i++) {
+        skiplistInsert(sl, (i + 1) * 10, &values[i], 0);
+    }
+    assert(sl->length == 10);
+
+    /* remove every other element */
+    for (int i = 0; i < 10; i += 2) {
+        assert(skiplistDelete(sl, (i + 1) * 10) == 1);
+    }
+    assert(sl->length == 5);
+
+    /* remaining scores: 20, 40, 60, 80, 100 */
+    long long expected[5] = {20, 40, 60, 80, 100};
+    skiplistNode *node = skiplistFirst(sl);
+    for (int i = 0; i < 5; i++) {
+        assert(node != NULL && node->score == expected[i]);
+        node = node->level[0].forward;
+    }
+    assert(node == NULL);
+    assert(sl->tail->score == 100);
+
+    /* re-insert previously deleted scores */
+    for (int i = 0; i < 10; i += 2) {
+        assert(skiplistInsert(sl, (i + 1) * 10, &values[i], 0) == 1);
+    }
+    assert(sl->length == 10);
+
+    /* now all 10 scores should be present in order */
+    node = skiplistFirst(sl);
+    for (int i = 0; i < 10; i++) {
+        assert(node != NULL && node->score == (i + 1) * 10);
+        node = node->level[0].forward;
+    }
+    assert(node == NULL);
+    assert(sl->tail->score == 100);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistChaos() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    const int N = 2000;
+    const int SCORE_RANGE = 1000;
+    long long *values = gtid_malloc(sizeof(long long) * (N + 1));
+    for (int i = 0; i <= N; i++) values[i] = i;
+
+    /* Phase 1: insert N random scores in [1, SCORE_RANGE] with
+     * score_unique=1 so that each score is represented by exactly one
+     * node, leaving the final length equal to the number of distinct
+     * scores we actually rolled. */
+    srandom(0xC0FFEE);
+    int inserted = 0;
+    for (int i = 0; i < N; i++) {
+        int score = (int)(random() % SCORE_RANGE) + 1;
+        long long v = score;
+        if (skiplistInsert(sl, score, &values[score], 1) == 1) {
+            inserted++;
+        }
+    }
+    assert((long long)inserted == (long long)sl->length);
+    assert(inserted > 0);
+
+    /* Verify strictly increasing forward chain. */
+    long long count = 0;
+    long long prev_score = LLONG_MIN;
+    skiplistNode *node = skiplistFirst(sl);
+    while (node) {
+        assert(node->score > prev_score);
+        prev_score = node->score;
+        node = node->level[0].forward;
+        count++;
+    }
+    assert(count == (long long)sl->length);
+    assert(sl->tail->score == prev_score);
+
+    /* Verify strictly decreasing backward chain. */
+    count = 0;
+    node = sl->tail;
+    prev_score = LLONG_MAX;
+    while (node) {
+        assert(node->score < prev_score);
+        prev_score = node->score;
+        node = node->backward;
+        count++;
+    }
+    assert(count == (long long)sl->length);
+    assert(skiplistFirst(sl) && skiplistFirst(sl)->score == prev_score);
+
+    /* Phase 2: delete all scores, one by one, in ascending order. After
+     * each successful delete, sl->length strictly decreases. */
+    long long prev_length = (long long)sl->length + 1;
+    for (int s = 1; s <= SCORE_RANGE; s++) {
+        int deleted = skiplistDelete(sl, s);
+        if (deleted) {
+            assert((long long)sl->length < prev_length);
+            prev_length = sl->length;
+        }
+    }
+    assert(sl->length == 0);
+    assert(sl->tail == NULL);
+    assert(skiplistFirst(sl) == NULL);
+    assert(sl->level == 1);
+
+    /* Phase 3: re-insert the same scores (still in random order) and
+     * verify everything works again. */
+    srandom(0xC0FFEE);
+    for (int i = 0; i < N; i++) {
+        int score = (int)(random() % SCORE_RANGE) + 1;
+        long long v = score;
+        (void)skiplistInsert(sl, score, &values[score], 1);
+    }
+    assert((long long)sl->length == (long long)inserted);
+    /* sorted order invariant still holds */
+    prev_score = LLONG_MIN;
+    node = skiplistFirst(sl);
+    while (node) {
+        assert(node->score > prev_score);
+        prev_score = node->score;
+        node = node->level[0].forward;
+    }
+
+    gtid_free(values);
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistIterator() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    skiplistIterator it;
+    long long v0 = 0;
+
+    /* Forward iteration on an empty list returns NULL immediately. */
+    assert(skiplistInitIterator(&it, sl) == 0);
+    assert(skiplistIteratorNext(&it) == NULL);
+    /* Repeated calls past the end keep returning NULL. */
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+
+    /* Reverse iteration on an empty list also returns NULL. */
+    assert(skiplistReverseInitIterator(&it, sl) == 0);
+    assert(skiplistIteratorNext(&it) == NULL);
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+
+    /* Single-node list: both forward and reverse visit exactly that node. */
+    assert(skiplistInsert(sl, 42, &v0, 0) == 1);
+
+    assert(skiplistInitIterator(&it, sl) == 0);
+    skiplistNode *n = skiplistIteratorNext(&it);
+    assert(n != NULL && n->score == 42 && n->value == &v0);
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+
+    assert(skiplistReverseInitIterator(&it, sl) == 0);
+    n = skiplistIteratorNext(&it);
+    assert(n != NULL && n->score == 42 && n->value == &v0);
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+
+    /* Populate a fresh list (intentionally out of order) and walk it. */
+    skiplist *multi = skiplistCreate(&skiplistTestType);
+    long long values[5] = {1, 2, 3, 4, 5};
+    long long scores[5] = {50, 20, 80, 10, 40};
+    for (int i = 0; i < 5; i++) {
+        assert(skiplistInsert(multi, scores[i], &values[i], 0) == 1);
+    }
+
+    /* Forward iteration visits scores in ascending order. */
+    long long expected[5] = {10, 20, 40, 50, 80};
+    long long *expected_value[5] = {&values[3], &values[1], &values[4],
+                                    &values[0], &values[2]};
+    assert(skiplistInitIterator(&it, multi) == 0);
+    for (int i = 0; i < 5; i++) {
+        skiplistNode *node = skiplistIteratorNext(&it);
+        assert(node != NULL);
+        assert(node->score == expected[i]);
+        assert(node->value == expected_value[i]);
+    }
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+
+    /* Reverse iteration visits scores in descending order. */
+    assert(skiplistReverseInitIterator(&it, multi) == 0);
+    for (int i = 4; i >= 0; i--) {
+        skiplistNode *node = skiplistIteratorNext(&it);
+        assert(node != NULL);
+        assert(node->score == expected[i]);
+        assert(node->value == expected_value[i]);
+    }
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+
+    /* Iterator over a duplicate-score chain: all entries are visited. */
+    long long va = 100, vb = 200, vc = 300;
+    skiplist *dup = skiplistCreate(&skiplistTestType);
+    assert(skiplistInsert(dup, 7, &va, 0) == 1);
+    assert(skiplistInsert(dup, 7, &vb, 0) == 1);
+    assert(skiplistInsert(dup, 7, &vc, 0) == 1);
+    /* same-score inserts put the newest at the head, so forward iteration
+     * sees vc -> vb -> va. */
+    assert(skiplistInitIterator(&it, dup) == 0);
+    assert(skiplistIteratorNext(&it)->value == &vc);
+    assert(skiplistIteratorNext(&it)->value == &vb);
+    assert(skiplistIteratorNext(&it)->value == &va);
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+    skiplistFree(dup);
+    skiplistFree(multi);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistIteratorPartial() {
+    /* Iterators that stop before the end / before the start must not
+     * corrupt the list. The list is also re-iterated to confirm it is
+     * still walkable in full. */
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    long long values[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    for (int i = 0; i < 10; i++) {
+        assert(skiplistInsert(sl, (i + 1) * 10, &values[i], 0) == 1);
+    }
+    assert(sl->length == 10);
+
+    skiplistIterator it;
+
+    /* Take only the first 3 nodes. */
+    assert(skiplistInitIterator(&it, sl) == 0);
+    for (int i = 0; i < 3; i++) {
+        skiplistNode *node = skiplistIteratorNext(&it);
+        assert(node != NULL && node->score == (i + 1) * 10);
+    }
+    /* Deinit early. The list itself must be unchanged. */
+    skiplistDeinitIterator(&it);
+    assert(sl->length == 10);
+    assert(skiplistFirst(sl)->score == 10);
+    assert(sl->tail->score == 100);
+
+    /* Take only the last 3 nodes via the reverse iterator. */
+    assert(skiplistReverseInitIterator(&it, sl) == 0);
+    int expected[3] = {100, 90, 80};
+    for (int i = 0; i < 3; i++) {
+        skiplistNode *node = skiplistIteratorNext(&it);
+        assert(node != NULL && node->score == expected[i]);
+    }
+    skiplistDeinitIterator(&it);
+    assert(sl->length == 10);
+    assert(sl->tail->score == 100);
+
+    /* Re-iterate the full list forward to confirm no corruption. */
+    assert(skiplistInitIterator(&it, sl) == 0);
+    for (int i = 0; i < 10; i++) {
+        skiplistNode *node = skiplistIteratorNext(&it);
+        assert(node != NULL && node->score == (i + 1) * 10);
+        assert(node->value == &values[i]);
+    }
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+
+    /* Re-iterate the full list in reverse. */
+    assert(skiplistReverseInitIterator(&it, sl) == 0);
+    for (int i = 9; i >= 0; i--) {
+        skiplistNode *node = skiplistIteratorNext(&it);
+        assert(node != NULL && node->score == (i + 1) * 10);
+        assert(node->value == &values[i]);
+    }
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistIteratorReinit() {
+    /* The same iterator object should be reusable after a fresh init. */
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    long long values[3] = {1, 2, 3};
+    assert(skiplistInsert(sl, 30, &values[2], 0) == 1);
+    assert(skiplistInsert(sl, 10, &values[0], 0) == 1);
+    assert(skiplistInsert(sl, 20, &values[1], 0) == 1);
+
+    skiplistIterator it;
+    assert(skiplistInitIterator(&it, sl) == 0);
+    assert(skiplistIteratorNext(&it)->value == &values[0]);
+    skiplistDeinitIterator(&it);
+
+    /* Re-init in the opposite direction on the same iterator object. */
+    assert(skiplistReverseInitIterator(&it, sl) == 0);
+    assert(skiplistIteratorNext(&it)->value == &values[2]);
+    skiplistDeinitIterator(&it);
+
+    skiplistFree(sl);
+    return 1;
+}
+
+int test_skiplistIteratorSeek() {
+    skiplist *sl = skiplistCreate(&skiplistTestType);
+    skiplistIterator it;
+    long long values[5] = {1, 2, 3, 4, 5};
+    long long scores[5] = {10, 20, 30, 40, 50};
+
+    /* Seek on an empty list returns 0 and yields NULL on Next. */
+    assert(skiplistInitIterator(&it, sl) == 0);
+    assert(skiplistIteratorSeek(&it, 0) == 0);
+    assert(skiplistIteratorNext(&it) == NULL);
+    skiplistDeinitIterator(&it);
+
+    /* Populate out of order. */
+    for (int i = 0; i < 5; i++) {
+        assert(skiplistInsert(sl, scores[i], &values[i], 0) == 1);
+    }
+    assert(skiplistInitIterator(&it, sl) == 0);
+
+    /* Target equal to an existing score lands on that node. */
+    assert(skiplistIteratorSeek(&it, 10) == 1);
+    assert(skiplistIteratorNext(&it)->score == 10);
+    assert(skiplistIteratorSeek(&it, 30) == 1);
+    assert(skiplistIteratorNext(&it)->score == 30);
+    assert(skiplistIteratorSeek(&it, 50) == 1);
+    assert(skiplistIteratorNext(&it)->score == 50);
+
+    /* Target falls between two scores: lands on the next higher one. */
+    assert(skiplistIteratorSeek(&it, 25) == 1);
+    assert(skiplistIteratorNext(&it)->score == 30);
+    assert(skiplistIteratorSeek(&it, 15) == 1);
+    assert(skiplistIteratorNext(&it)->score == 20);
+    assert(skiplistIteratorSeek(&it, 45) == 1);
+    assert(skiplistIteratorNext(&it)->score == 50);
+
+    /* Target below the smallest score: lands on the first node. */
+    assert(skiplistIteratorSeek(&it, 0) == 1);
+    assert(skiplistIteratorNext(&it)->score == 10);
+    assert(skiplistIteratorSeek(&it, LLONG_MIN) == 1);
+    assert(skiplistIteratorNext(&it)->score == 10);
+
+    /* Target above the largest score: returns 0 and the iterator is
+     * exhausted until the next seek. */
+    assert(skiplistIteratorSeek(&it, 51) == 0);
+    assert(skiplistIteratorNext(&it) == NULL);
+    assert(skiplistIteratorSeek(&it, LLONG_MAX) == 0);
+    assert(skiplistIteratorNext(&it) == NULL);
+
+    /* A successful seek after a past-end one revives the iterator. */
+    assert(skiplistIteratorSeek(&it, 40) == 1);
+    assert(skiplistIteratorNext(&it)->score == 40);
+    assert(skiplistIteratorNext(&it)->score == 50);
+    assert(skiplistIteratorNext(&it) == NULL);
+
+    skiplistDeinitIterator(&it);
+    skiplistFree(sl);
+    return 1;
+}
+
 int __failed_tests = 0;
 int __test_num = 0;
 #define test_cond(descr,_c) do { \
@@ -1611,6 +2618,44 @@ int test_api(void) {
             test_gtidSeqXsync() == 1);
         test_cond("gtidSeqPsync function",
             test_gtidSeqPsync() == 1);
+        test_cond("gtidSetIteratorNext function",
+            test_gtidSetIteratorNext() == 1);
+        test_cond("uuidSetIteratorNext function",
+            test_uuidSetIteratorNext() == 1);
+        test_cond("uuidSetIteratorSeek function",
+            test_uuidSetIteratorSeek() == 1);
+        test_cond("gtidSetIteratorSeek function",
+            test_gtidSetIteratorSeek() == 1);
+        test_cond("skiplistNew function",
+            test_skiplistNew() == 1);
+        test_cond("skiplistEmpty function",
+            test_skiplistEmpty() == 1);
+        test_cond("skiplistInsert function",
+            test_skiplistInsert() == 1);
+        test_cond("skiplistInsertSortedOrder function",
+            test_skiplistInsertSortedOrder() == 1);
+        test_cond("skiplistScoreUnique function",
+            test_skiplistScoreUnique() == 1);
+        test_cond("skiplistDelete function",
+            test_skiplistDelete() == 1);
+        test_cond("skiplistDeleteOneNode function",
+            test_skiplistDeleteOneNode() == 1);
+        test_cond("skiplistFindFirstGte function",
+            test_skiplistFindFirstGte() == 1);
+        test_cond("skiplistFreeWithValues function",
+            test_skiplistFreeWithValues() == 1);
+        test_cond("skiplistInsertAfterDelete function",
+            test_skiplistInsertAfterDelete() == 1);
+        test_cond("skiplistChaos function",
+            test_skiplistChaos() == 1);
+        test_cond("skiplistIterator function",
+            test_skiplistIterator() == 1);
+        test_cond("skiplistIteratorPartial function",
+            test_skiplistIteratorPartial() == 1);
+        test_cond("skiplistIteratorReinit function",
+            test_skiplistIteratorReinit() == 1);
+        test_cond("skiplistIteratorSeek function",
+            test_skiplistIteratorSeek() == 1);
 
     } test_report()
     return 1;
