@@ -29,6 +29,8 @@
 #include "server.h"
 #include <gtid.h>
 #include <ctype.h>
+#include "xredis_gtid_adaptation_version.h"
+
 
 int replicationSetupSlaveForXFullResync(client *slave, long long offset) {
     int ret = C_OK;
@@ -313,13 +315,13 @@ void masterAnaPsyncRequest(syncResult *result, syncRequest *request) {
     }
 
     if (!server.repl_backlog ||
-        psync_offset < server.repl_backlog_off ||
-        psync_offset > (server.repl_backlog_off+server.repl_backlog_histlen)) {
+        psync_offset < gtidGetBacklogOffset()  ||
+        psync_offset > (gtidGetBacklogOffset() +gtidGetBacklogHistlen())) {
         result->action = SYNC_ACTION_FULL;
         result->msg = sdscatprintf(sdsempty(),
                 "psync offset(%lld) not in backlog [%lld,%lld)",
-                psync_offset, server.repl_backlog_off,
-                server.repl_backlog_off+server.repl_backlog_histlen);
+                psync_offset, gtidGetBacklogOffset() ,
+                gtidGetBacklogOffset() +gtidGetBacklogHistlen());
         return;
     }
 
@@ -457,7 +459,7 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
     }
     if (server.repl_mode->mode == REPL_MODE_PSYNC && psync_offset < server.repl_backlog_off) {
         result->action = SYNC_ACTION_FULL;
-        result->msg = result->msg = sdscatprintf(sdsempty(),
+        result->msg = sdscatprintf(sdsempty(),
                 "psync offset(%lld) not in backlog [%lld,%lld)",
                 psync_offset, server.repl_backlog_off,
                 server.repl_backlog_off+server.repl_backlog_histlen);
@@ -599,39 +601,6 @@ syncResult *masterAnaSyncRequest(syncRequest *request) {
     return result;
 }
 
-typedef void (*consume_cb)(char *p, long long thislen, void *pd);
-
-/* Check adReplyReplicationBacklog for more details */
-long long consumeReplicationBacklogLimited(long long offset, long long limit,
-         consume_cb cb, void *pd) {
-    long long added = 0, j, skip, len;
-    serverAssert(limit >= 0 && offset >= server.repl_backlog_off);
-    if (server.repl_backlog_histlen == 0) return 0;
-    skip = offset - server.repl_backlog_off;
-    j = (server.repl_backlog_idx +
-        (server.repl_backlog_size-server.repl_backlog_histlen)) %
-        server.repl_backlog_size;
-    j = (j + skip) % server.repl_backlog_size;
-    len = server.repl_backlog_histlen - skip;
-    len = len < limit ? len : limit; /* limit bytes to copy */
-    while(len) {
-        long long thislen =
-            ((server.repl_backlog_size - j) < len) ?
-            (server.repl_backlog_size - j) : len;
-        cb(server.repl_backlog + j, thislen, pd);
-        len -= thislen;
-        j = 0;
-        added += thislen;
-    }
-
-    return added;
-}
-
-static void consumeReplicationBacklogLimitedAddReplyCb(char *p,
-        long long thislen, void *pd) {
-    addReplySds((client*)pd, sdsnewlen(p,thislen));
-}
-
 long long addReplyReplicationBacklogLimited(client *c, long long offset,
         long long limit) {
     return consumeReplicationBacklogLimited(offset,limit,
@@ -668,7 +637,8 @@ void masterSetupPartialSynchronization(client *c, long long offset,
     c->flags |= CLIENT_SLAVE;
     c->replstate = SLAVE_STATE_ONLINE;
     c->repl_ack_time = server.unixtime;
-    c->repl_put_online_on_ack = 0;
+    gtidClearReplStartCmdStreamOnAck(c);
+    
     listAddNodeTail(server.slaves,c);
 
     if (connWrite(c->conn,buf,buflen) != buflen) {
@@ -687,10 +657,10 @@ void masterSetupPartialSynchronization(client *c, long long offset,
         sent, offset, limit);
 
     if (limit > 0) {
-        c->flags |= CLIENT_CLOSE_AFTER_REPLY;
         serverLog(LL_NOTICE,
                 "[gtid] Disconnect slave %s to notify repl mode switched.",
                 replicationGetSlaveName(c));
+        gtidFreeClientAsync(c);
         return;
     }
 
@@ -706,14 +676,14 @@ void masterSetupPartialSynchronization(client *c, long long offset,
                           NULL);
 }
 
-int masterReplySyncRequest(client *c, syncResult *result) {
+int masterReplySyncRequest(client *c,  long long psync_offset, syncResult *result) {
     int ret = result->action == SYNC_ACTION_FULL ? C_ERR : C_OK;
 
     if (result->action == SYNC_ACTION_NOP) {
         serverLog(LL_NOTICE,
                 "[%s] Partial sync request from %s handle by vanilla redis.",
                 replModeName(result->request_mode), replicationGetSlaveName(c));
-        ret = masterTryPartialResynchronization(c);
+        ret = gtidMasterTryPartialResynchronization(c, psync_offset);
     } else if (result->action == SYNC_ACTION_XCONTINUE) {
         char *buf;
         int buflen;
@@ -780,10 +750,10 @@ int masterReplySyncRequest(client *c, syncResult *result) {
     return ret;
 }
 
-int ctrip_masterTryPartialResynchronization(client *c) {
+int ctrip_masterTryPartialResynchronization(client *c, long long psync_offset) {
     syncRequest *request = masterParseSyncRequest(c);
     syncResult *result = masterAnaSyncRequest(request);
-    int ret = masterReplySyncRequest(c,result);
+    int ret = masterReplySyncRequest(c, psync_offset, result);
     syncRequestFree(request);
     syncResultFree(result);
     return ret;
@@ -791,16 +761,11 @@ int ctrip_masterTryPartialResynchronization(client *c) {
 
 const char *xsyncUuidInterestedGet(void);
 
-int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
-    gtidSet *gtid_slave = NULL;
+sds sendXsyncCommand(connection *conn) {
+
     char maxgap[32];
-    int result = PSYNC_WAIT_REPLY;
+    gtidSet *gtid_slave = NULL;
     sds gtid_slave_repr, gtid_lost_repr;
-
-    serverLog(LL_NOTICE, "[gtid] Trying parital sync in (%s) mode.",
-            replModeName(server.repl_mode->mode));
-
-    if (server.repl_mode->mode != REPL_MODE_XSYNC) return -1;
 
     gtid_slave = serverGtidSetGet("[xsync]");
     gtid_slave_repr = gtidSetDump(gtid_slave);
@@ -814,6 +779,21 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
 
     sds reply = sendCommand(conn,"XSYNC",uuid_interested,
             gtid_slave_repr,"GTID.LOST",gtid_lost_repr,"MAXGAP",maxgap,NULL);
+    gtidSetFree(gtid_slave);
+    sdsfree(gtid_slave_repr);
+    sdsfree(gtid_lost_repr);
+    return reply;
+} 
+
+int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
+    int result = PSYNC_WAIT_REPLY;
+
+    serverLog(LL_NOTICE, "[gtid] Trying parital sync in (%s) mode.",
+            replModeName(server.repl_mode->mode));
+
+    if (server.repl_mode->mode != REPL_MODE_XSYNC) return -1;
+
+    sds reply = sendXsyncCommand(conn);
     if (reply != NULL) {
         serverLog(LL_WARNING,"[xsync] Unable to send XSYNC: %s", reply);
         sdsfree(reply);
@@ -821,20 +801,17 @@ int ctrip_slaveTryPartialResynchronizationWrite(connection *conn) {
         result = PSYNC_WRITE_ERROR;
     }
 
-    gtidSetFree(gtid_slave);
-    sdsfree(gtid_slave_repr);
-    sdsfree(gtid_lost_repr);
-
     return result;
 }
 
-#define SYNC_REPLY_INVALID      0
-#define SYNC_REPLY_FULLRESYNC   1
-#define SYNC_REPLY_CONTINUE     2
-#define SYNC_REPLY_XFULLRESYNC  3
-#define SYNC_REPLY_XCONTINUE    4
-#define SYNC_REPLY_TRANSERR     5
-#define SYNC_REPLY_TRANSERR2    6
+#define SYNC_REPLY_INVALID          0
+#define SYNC_REPLY_FULLRESYNC       1
+#define SYNC_REPLY_CONTINUE         2
+#define SYNC_REPLY_XFULLRESYNC      3
+#define SYNC_REPLY_XCONTINUE        4
+#define SYNC_REPLY_RDBCHANNELSYNC   5
+#define SYNC_REPLY_TRANSERR         6
+#define SYNC_REPLY_TRANSERR2        7
 
 typedef struct parsedSyncReply {
     int type;
@@ -861,6 +838,9 @@ typedef struct parsedSyncReply {
             sds replid;
             long long reploff;
         } xcontinue;
+        struct {
+            long long client_id;
+        } rdbchannelsync;
         struct {
             sds errmsg;
         } invalid;
@@ -1179,6 +1159,27 @@ static void parsedSyncReplySetupGtidInital(parsedSyncReply *parsed) {
     parsed->xfullresync.replid = NULL;
 }
 
+/* +RDBCHANNELSYNC clientid*/
+static void parseSyncReplyRdbchannelsync(sds reply, parsedSyncReply *parsed) {
+    char *client_id_str = strchr(reply,' ');
+    sds errmsg = NULL;
+    if (client_id_str)
+        client_id_str++;
+
+    if (!client_id_str) {
+        errmsg = sdsnew("Master replied with wrong +RDBCHANNELSYNC syntax:");
+        goto invalid;
+    }
+    long long client_id = strtoll(client_id_str, NULL, 10);
+    parsed->type = SYNC_REPLY_RDBCHANNELSYNC;
+    parsed->rdbchannelsync.client_id = client_id;
+    return;
+
+invalid:
+    parsed->type = SYNC_REPLY_INVALID;
+    parsed->invalid.errmsg = errmsg;
+}
+
 static parsedSyncReply *parseSyncReply(sds reply) {
     parsedSyncReply *parsed = parsedSyncReplyNew();
 
@@ -1190,6 +1191,8 @@ static parsedSyncReply *parseSyncReply(sds reply) {
         parseSyncReplyFullresync(reply,parsed);
     } else if (!strncmp(reply,"+CONTINUE",9)) {
         parseSyncReplyContinue(reply,parsed);
+    } else if(!strncmp(reply, "+RDBCHANNELSYNC",15)) {
+        parseSyncReplyRdbchannelsync(reply,parsed);
     } else if (!strncmp(reply,"-NOMASTERLINK",13) ||
         !strncmp(reply,"-LOADING",8)) {
         parsed->type = SYNC_REPLY_TRANSERR;
@@ -1201,6 +1204,317 @@ static parsedSyncReply *parseSyncReply(sds reply) {
     }
 
     return parsed;
+}
+
+
+/* read backlog iterator*/
+#define ONCE_READ_BUF_SIZE 256
+typedef struct readBacklogIterator {
+    client mock;
+    long long backlog;   /* -1 = not seeked yet; >=0 = backlog offset for mock.querybuf[mock.qb_pos] */
+} readBacklogIterator;
+
+void readBacklogIteratorInit(readBacklogIterator *it) {
+    memset(&it->mock, 0, sizeof(it->mock));
+    gtidMockClientInit(&it->mock);
+    it->mock.bulklen = -1;  /* processMultibulkBuffer ） */
+    it->backlog = -1;
+}
+
+void readBacklogIteratorDeinit(readBacklogIterator *it) {
+    gtidMockClientDeinit(&it->mock);
+    it->mock.querybuf = NULL;
+    it->backlog = -1;  
+}
+
+void readBacklogIteratorSeekTo(readBacklogIterator *it, long long offset) {
+    serverAssert(offset >= 0);  
+
+    if (it->backlog < 0) {
+        it->backlog = offset;
+        return;
+    }
+
+    long long start = it->backlog - sdslen(it->mock.querybuf);
+    long long end = it->backlog;
+
+    if (offset == start) {
+        return;  /* no-op */
+    }
+    if (offset >= start && offset < end) {
+        size_t new_qb_pos =(size_t)(offset - (long long)start);
+        sdsrange(it->mock.querybuf, new_qb_pos, -1);
+        it->mock.qb_pos = 0;
+        return;
+    }
+    /* offset < cur (rewind) or offset > end：clear+seek */
+    sdsclear(it->mock.querybuf);
+    it->mock.qb_pos = 0;
+    it->backlog = offset;
+}
+
+ssize_t readBacklogIteratorParseNext(readBacklogIterator *it,
+                                      robj ***out_argv, int *out_argc) {
+    serverAssert(it->backlog >= 0);
+    serverAssert(out_argv != NULL && out_argc != NULL);
+    *out_argv = NULL;
+    *out_argc = 0;
+
+    gtidMockClientCleanArgv(&it->mock);
+
+    size_t buffered = sdslen(it->mock.querybuf) - it->mock.qb_pos;
+    size_t total_read = 0;
+    int any_read = 0;
+
+    while (1) {
+        while (it->mock.qb_pos < sdslen(it->mock.querybuf)) {
+            if (processMultibulkBuffer(&it->mock) != C_OK) {
+                if (it->mock.flags & CLIENT_PROTOCOL_ERROR) {
+                    serverLog(LL_WARNING,
+                              "[gaplog] protocol error at offset %lld, qb_pos=%zu, flags=%lu",
+                              it->backlog, it->mock.qb_pos,
+                              (unsigned long)it->mock.flags);
+                    return -1;
+                }
+                break;  
+            }
+            size_t consumed = buffered + total_read
+                              - (sdslen(it->mock.querybuf) - it->mock.qb_pos);
+            *out_argv = it->mock.argv;
+            *out_argc = it->mock.argc;
+            return (ssize_t)consumed;
+        }
+
+        ssize_t nread = gtidBacklogAppendToSds(it->backlog,
+                                            &it->mock.querybuf,
+                                            ONCE_READ_BUF_SIZE);
+        if (nread <= 0) {
+            if (!any_read) return 0; 
+            serverLog(LL_WARNING,
+                      "[gaplog] gtidBacklogAppendToSds failed mid-cmd at offset %lld",
+                      it->backlog);
+            
+            return -1;
+        }
+        any_read = 1;
+        total_read += nread;
+        it->backlog += nread;
+    }
+}
+typedef struct {
+    robj **argv;
+    int argc;
+} gtidParsedCmd;
+typedef struct {
+    gtidParsedCmd *cmds;
+    int num_cmds;
+    int capacity;
+} gtidParsedCmdList;
+
+static void gtidParsedCmdListAdd(gtidParsedCmdList *list, client *c) {
+    if (list->num_cmds >= list->capacity) {
+        list->capacity = list->capacity ? list->capacity * 2 : 8;
+        list->cmds = zrealloc(list->cmds,
+                              sizeof(gtidParsedCmd) * list->capacity);
+    }
+    gtidParsedCmd *cmd = &list->cmds[list->num_cmds++];
+    cmd->argv = c->argv;
+    cmd->argc = c->argc;
+
+    /* move */
+    gtidMockClientMoveClientArgv(c);
+}
+
+static void gtidParsedCmdListCleanup(gtidParsedCmdList *list) {
+    for (int i = 0; i < list->num_cmds; i++) {
+        if (list->cmds[i].argv) {
+            for (int j = 0; j < list->cmds[i].argc; j++)
+                if (list->cmds[i].argv[j]) decrRefCount(list->cmds[i].argv[j]);
+            zfree(list->cmds[i].argv);
+        }
+    }
+    zfree(list->cmds);
+}
+
+void parseMultiCommand(gtidGaplogKeysBuilder *build,
+                       readBacklogIterator *it,
+                       long long select_dbid) {
+    serverAssert(it->backlog >= 0);
+
+    gtidParsedCmdList cmdlist = {0};
+
+    while (1) {
+        robj **argv;
+        int argc;
+        ssize_t consumed = readBacklogIteratorParseNext(it, &argv, &argc);
+        if (consumed <= 0) break;
+        serverAssert(argv != NULL && argc > 0);
+
+        sds cmd0 = (sds)argv[0]->ptr;
+        robj *argv3 = (argc >= 4) ? argv[3] : NULL;
+
+        gtidParsedCmdListAdd(&cmdlist, &it->mock);
+
+        if (argc >= 4 &&
+            !strcasecmp(cmd0, "gtid") &&
+            argv3 != NULL &&
+            !strcasecmp((sds)argv3->ptr, "exec")) {
+            break;
+        }
+    }
+
+    serverAssert(cmdlist.num_cmds != 0);
+
+    long long dbid = 0;
+    if (select_dbid >= 0) {
+        dbid = select_dbid;
+    } else {
+        gtidParsedCmd *last_cmd = &cmdlist.cmds[cmdlist.num_cmds - 1];
+        if (last_cmd->argv && last_cmd->argv[0]) {
+            sds last_cmd_name = (sds)last_cmd->argv[0]->ptr;
+            if (!strcasecmp(last_cmd_name, "gtid") &&
+                last_cmd->argc >= 3 && last_cmd->argv[2]) {
+                getLongLongFromObject(last_cmd->argv[2], &dbid);
+            }
+        }
+    }
+
+    for (int i = 0; i < cmdlist.num_cmds - 1; i++) {
+        gtidParsedCmd *cmd = &cmdlist.cmds[i];
+        sds cmd_name = (sds)cmd->argv[0]->ptr;
+        if (!strcasecmp(cmd_name, "select") && cmd->argc >= 2 && cmd->argv[1]) {
+            getLongLongFromObject(cmd->argv[1], &dbid);
+            continue;
+        }
+        gtidGaplogKeysBuilderAddFromCmd(build, dbid, cmd->argv, cmd->argc);
+    }
+
+    gtidParsedCmdListCleanup(&cmdlist);
+}
+
+int parseGtidCommand(gtidGaplogKeysBuilder *builder, robj **argv, int argc) {
+    long long dbid = 0;
+
+    if (argc < 4 || argv == NULL || argv[2] == NULL) {
+        serverLog(LL_WARNING, "[gaplog] invalid GTID command, argc=%d", argc);
+        return 0;
+    }
+
+    getLongLongFromObject(argv[2], &dbid);
+    gtidGaplogKeysBuilderAddFromCmd(builder, dbid, argv + 3, argc - 3);
+    return 0;  
+}
+
+skipType gtid_skip_type = {
+    .freeValue = gtidGaplogKeysRelease
+};
+
+static int saveGapLogEntry(sds uuid, gno_t gno, gtidGaplogKeys *kis) {
+    serverAssert(kis->size != 0);
+
+
+    dictEntry *de = dictFind(server.gtid_gap_log->data, uuid);
+    skiplist *sl;
+    if (de == NULL) {
+        sl = skiplistCreate(&gtid_skip_type);
+        sds uuid_key = sdsdup(uuid);
+        dictAdd(server.gtid_gap_log->data, uuid_key, sl);
+    } else {
+        sl = dictGetVal(de);
+    }
+
+    serverAssert(skiplistInsert(sl, gno, kis, 1) != 0);
+
+    uuidSet *last_uuid_set = NULL;
+    listNode *tail_ln = listLast(server.gtid_gap_log->history);
+    if (tail_ln != NULL) {
+        last_uuid_set = (uuidSet*)listNodeValue(tail_ln);
+        if (last_uuid_set->uuid_len != sdslen(uuid) ||
+            memcmp(last_uuid_set->uuid, uuid, sdslen(uuid)) != 0) {
+            last_uuid_set = NULL;
+        }
+    }
+
+    if (last_uuid_set != NULL) {
+        uuidSetAdd(last_uuid_set, gno, gno);
+    } else {
+        uuidSet *new_uuid_set = uuidSetNew(uuid, sdslen(uuid));
+        uuidSetAdd(new_uuid_set, gno, gno);
+        listAddNodeTail(server.gtid_gap_log->history, new_uuid_set);
+    }
+
+
+    server.gtid_gap_log->size++;
+    return 1;
+}
+
+void saveGapLogFromGtidSet(gtidSet *mlost) {
+    readBacklogIterator it;
+    readBacklogIteratorInit(&it);
+
+    gtidSetIterator gs_iterator;
+    gtidSetInitIterator(&gs_iterator, mlost);
+    uuidSet *us = NULL;
+    while ((us = gtidSetIteratorNext(&gs_iterator)) != NULL) {
+        uuidSetIterator us_iterator;
+        uuidSetInitIterator(&us_iterator, us);
+
+        gtidIntervalNode *node = NULL;
+        while ((node = uuidSetIteratorNext(&us_iterator)) != NULL) {
+            sds uuid = sdsnewlen(us->uuid, us->uuid_len);
+            for (gno_t gno = node->start; gno <= node->end; gno++) {
+                long long offset = gtidSeqLookup(server.gtid_seq, uuid,
+                                                  sdslen(uuid), gno);
+                if (offset < 0) continue;
+
+                readBacklogIteratorSeekTo(&it, offset);
+
+                long long dbid_from_select = -1;
+                gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
+
+                while (1) {
+                    robj **argv;
+                    int argc;
+                    ssize_t consumed = readBacklogIteratorParseNext(&it, &argv, &argc);
+                    if (consumed <= 0) break;
+
+                    sds cmd_name = (sds)argv[0]->ptr;
+
+                    if (!strcasecmp(cmd_name, "select") && argc >= 2) {
+                        getLongLongFromObject(argv[1], &dbid_from_select);
+                        continue;
+                    }
+                    if (!strcasecmp(cmd_name, "multi")) {
+                        parseMultiCommand(&builder, &it, dbid_from_select);
+                        break;
+                    }
+                    if (!strcasecmp(cmd_name, "gtid")) {
+                        parseGtidCommand(&builder, argv, argc);
+                        break;
+                    }
+                    serverLog(LL_WARNING, "[gaplog] saveGapLogFromGtidSet unexpected command %s", cmd_name);
+                }
+
+                if (builder.numkeys > 0) {
+                    saveGapLogEntry(uuid, gno, gtidGaplogKeysBuild(&builder));
+                    while (server.gtid_gap_log->size >
+                           (size_t)server.gtid_xsync_max_gap) {
+                        gtidGaplogTrim(server.gtid_gap_log,
+                                       server.gtid_gap_log->size -
+                                       server.gtid_xsync_max_gap);
+                    }
+                    
+                }
+                gtidGaplogDeinitKeysBuilder(&builder);
+                
+            }
+            sdsfree(uuid);
+        }
+        uuidSetDeinitIterator(&us_iterator);
+    }
+    gtidSetDeinitIterator(&gs_iterator);
+
+    readBacklogIteratorDeinit(&it);
 }
 
 int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
@@ -1226,6 +1540,10 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
         serverReplStreamMasterLinkBroken();
         result = PSYNC_TRY_LATER;
         goto end;
+    }
+
+    if (parsed->type == SYNC_REPLY_RDBCHANNELSYNC) {
+        goto by_redis;
     }
 
     if (server.repl_mode->mode != REPL_MODE_XSYNC) {
@@ -1320,7 +1638,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
                     "[xsync] Successful partial xsync with master: %s", reply);
 
             gtidSet *gtid_cont = parsed->xcontinue.gtid_cont;
-            gtidSet *gtid_slost = NULL, *gtid_slave = NULL;
+            gtidSet *gtid_slost = NULL, *gtid_slave = NULL, *gtid_mlost = NULL;
             sds gtid_cont_repr, gtid_slave_repr, gtid_slost_repr;
 
             gtid_slave = serverGtidSetGet("[xsync]");
@@ -1332,6 +1650,19 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             serverLog(LL_NOTICE, "[xsync] gtid.set-slost(%s) = "
                     "gtid.set-continue(%s) - gtid.set-slave(%s)",
                     gtid_slost_repr,gtid_cont_repr,gtid_slave_repr);
+            
+            if (server.gtid_gaplog_enabled) {
+                gtid_mlost = gtidSetDup(gtid_slave);
+                gtidSetDiff(gtid_mlost, gtid_cont);
+                sds gtid_mlost_repr = gtidSetDump(gtid_mlost);
+                serverLog(LL_WARNING, "[gaplog] gtid_mlost = %s, count = %d",
+                        gtid_mlost_repr, (int)gtidSetCount(gtid_mlost));
+                sdsfree(gtid_mlost_repr);
+                if (gtidSetCount(gtid_mlost) > 0) {
+                    saveGapLogFromGtidSet(gtid_mlost);
+                }
+                gtidSetFree(gtid_mlost);
+            }
 
             /* Update gtid lost, master.uuid or replid/reploff. */
             serverReplStreamUpdateXsync(gtid_slost,NULL,
@@ -1342,8 +1673,7 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
 
             sdsfree(gtid_cont_repr), sdsfree(gtid_slave_repr),
                 sdsfree(gtid_slost_repr);
-            gtidSetFree(gtid_slost), gtidSetFree(gtid_slave);
-
+            gtidSetFree(gtid_slost), gtidSetFree(gtid_slave),
             result = PSYNC_CONTINUE;
         }
     }
@@ -1361,6 +1691,7 @@ by_redis:
 #ifdef REDIS_TEST
 int gtidTest(int argc, char **argv, int accurate) {
     UNUSED(argc), UNUSED(argv), UNUSED(accurate);
+    server.proto_max_bulk_len = 512LL*1024*1024;
 
     int error = 0;
     server.maxmemory_policy = MAXMEMORY_FLAG_LFU;
@@ -1635,6 +1966,465 @@ int gtidTest(int argc, char **argv, int accurate) {
         sdsfree(replid), sdsfree(master_uuid);
         gtidSetFree(gtid_cont);
         gtidSetFree(gtid_lost);
+    }
+
+    TEST("gtid - gapLog key new and release") {
+        sds key = sdsnew("testkey");
+        sds *subkeys = zmalloc(sizeof(sds) * 2);
+        subkeys[0] = sdsnew("field1");
+        subkeys[1] = sdsnew("field2");
+        /* test hash */
+        gtidGaplogKey *gk = gtidGaplogKeyNew(0, OBJ_HASH, key, subkeys, 2);
+        test_assert(gk != NULL);
+        test_assert(gk->dbid == 0);
+        test_assert(gk->key_type == OBJ_HASH);
+        test_assert(gk->subkeys_count == 2);
+        test_assert(sdslen(gk->key) == 7);   /* "testkey" */
+        test_assert(sdslen(gk->subkeys[0]) == 6); /* "field1" */
+        test_assert(sdslen(gk->subkeys[1]) == 6); /* "field2" */
+
+        /* test string */
+        sds key2 = sdsnew("strkey");
+        gtidGaplogKey *gk2 = gtidGaplogKeyNew(1, OBJ_STRING, key2, NULL, 0);
+        test_assert(gk2 != NULL);
+        test_assert(gk2->dbid == 1);
+        test_assert(gk2->key_type == OBJ_STRING);
+        test_assert(gk2->subkeys_count == 0);
+        test_assert(gk2->subkeys == NULL);
+        test_assert(sdslen(gk2->key) == 6);  /* "strkey" */
+
+        /* release */
+        gtidGaplogKeyRelease(gk);
+        gtidGaplogKeyRelease(gk2);
+
+        /* release NULL*/
+        gtidGaplogKeyRelease(NULL);
+    }
+
+    TEST("gtid - gapLog keys builder, build and release") {
+        /* test builder */
+        gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
+
+        /* add 2 keys */
+        gtidGaplogKeysPrepareBuilder(&builder, 2);
+
+        sds key1 = sdsnew("key_one");
+        sds key2 = sdsnew("key_two");
+        builder.keys_infos[builder.numkeys++] =
+            gtidGaplogKeyNew(0, OBJ_STRING, key1, NULL, 0);
+        builder.keys_infos[builder.numkeys++] =
+            gtidGaplogKeyNew(1, OBJ_LIST, key2, NULL, 0);
+
+        test_assert(builder.numkeys == 2);
+
+        /* builder => gtidGaplogKeys */
+        gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
+        test_assert(keys != NULL);
+        test_assert(keys->size == 2);
+        test_assert(builder.numkeys == 0); /* builder clean */
+
+        test_assert(keys->keys[0]->dbid == 0);
+        test_assert(keys->keys[0]->key_type == OBJ_STRING);
+        test_assert(sdslen(keys->keys[0]->key) == 7); /* "key_one" */
+        test_assert(keys->keys[1]->dbid == 1);
+        test_assert(keys->keys[1]->key_type == OBJ_LIST);
+        test_assert(sdslen(keys->keys[1]->key) == 7); /* "key_two" */
+
+        /* release keys */
+        gtidGaplogKeysRelease(keys);
+        gtidGaplogDeinitKeysBuilder(&builder);
+    }
+
+    TEST("gtid - gapLog new, reset and release") {
+
+        gtidGaplog *gap_log = gtidGaplogNew();
+        test_assert(gap_log != NULL);
+        test_assert(gap_log->size == 0);
+        test_assert(gap_log->data != NULL);
+        test_assert(gap_log->history != NULL);
+        test_assert(dictSize(gap_log->data) == 0);
+        test_assert(listLength(gap_log->history) == 0);
+
+        /* reset */
+        gtidGaplogReset(gap_log);
+        test_assert(gap_log->size == 0);
+        test_assert(dictSize(gap_log->data) == 0);
+        test_assert(listLength(gap_log->history) == 0);
+
+        /* relase */
+        gtidGaplogRelease(gap_log);
+        zfree(gap_log);
+    }
+
+    TEST("gtid - gapLog data insert and iterate") {
+        /*  data iterator */
+        gtidGaplog *gap_log = gtidGaplogNew();
+        skiplist *sl = skiplistCreate(&gtid_skip_type);
+        test_assert(sl != NULL);
+
+        /* add  keys (gno=1) */
+        {
+            gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
+            gtidGaplogKeysPrepareBuilder(&builder, 1);
+            sds k = sdsnew("key_a");
+            builder.keys_infos[builder.numkeys++] =
+                gtidGaplogKeyNew(0, OBJ_STRING, k, NULL, 0);
+            gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
+            gtidGaplogDeinitKeysBuilder(&builder);
+            int ret = skiplistInsert(sl, 1, keys, 1);
+            test_assert(ret == 1);
+            gap_log->size++;
+        }
+
+        /* add  keys (gno=5) */
+        {
+            gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
+            gtidGaplogKeysPrepareBuilder(&builder, 1);
+            sds k = sdsnew("hashkey");
+            sds *subs = zmalloc(sizeof(sds) * 1);
+            subs[0] = sdsnew("field_a");
+            builder.keys_infos[builder.numkeys++] =
+                gtidGaplogKeyNew(0, OBJ_HASH, k, subs, 1);
+            gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
+            gtidGaplogDeinitKeysBuilder(&builder);
+            int ret = skiplistInsert(sl, 5, keys, 1);
+            test_assert(ret == 1);
+            gap_log->size++;
+        }
+
+       
+        sds uuid_key = sdsnew("uuid-test");
+        dictAdd(gap_log->data, uuid_key, sl);
+
+        
+        gtidGaplogDataIterator iter;
+        gtidGaplogDataInitIterator(&iter, sl, 1);
+
+        
+        gno_t gno = gtidGaplogDataGetGno(&iter);
+        test_assert(gno == 1);
+        gtidGaplogKeys *k1 = gtidGaplogDataNext(&iter);
+        test_assert(k1 != NULL);
+        test_assert(k1->size == 1);
+        test_assert(k1->keys[0]->key_type == OBJ_STRING);
+        test_assert(sdslen(k1->keys[0]->key) == 5); /* "key_a" */
+
+        /* 2 node */
+        gno = gtidGaplogDataGetGno(&iter);
+        test_assert(gno == 5);
+        gtidGaplogKeys *k2 = gtidGaplogDataNext(&iter);
+        test_assert(k2 != NULL);
+        test_assert(k2->size == 1);
+        test_assert(k2->keys[0]->key_type == OBJ_HASH);
+        test_assert(k2->keys[0]->subkeys_count == 1);
+        test_assert(sdslen(k2->keys[0]->subkeys[0]) == 7); /* "field_a" */
+
+        gtidGaplogKeys *k3 = gtidGaplogDataNext(&iter);
+        test_assert(k3 == NULL);
+
+        gtidGaplogDeinitDataIterator(&iter);
+
+        gtidGaplogDataInitIterator(&iter, sl, 3);
+        gno = gtidGaplogDataGetGno(&iter);
+        test_assert(gno == 5); /* gno=1 */
+        gtidGaplogKeys *k_mid = gtidGaplogDataNext(&iter);
+        test_assert(k_mid != NULL);
+        test_assert(sdslen(k_mid->keys[0]->key) == 7); /* "hashkey" */
+        gtidGaplogDeinitDataIterator(&iter);
+
+        gtidGaplogDataInitIterator(&iter, sl, 10);
+        gno = gtidGaplogDataGetGno(&iter);
+        test_assert(gno == -1); /* not find note */
+        gtidGaplogKeys *k_empty = gtidGaplogDataNext(&iter);
+        test_assert(k_empty == NULL);
+        gtidGaplogDeinitDataIterator(&iter);
+
+       
+        gap_log->size = 0;
+        dictEmpty(gap_log->data, NULL);
+        listEmpty(gap_log->history);
+        zfree(gap_log);
+    }
+
+    TEST("gtid - gapLog history iterator") {
+        
+        gtidGaplog *gap_log = gtidGaplogNew();
+
+        /* add uuid-1: [1-3, 10-12] */
+        uuidSet *us1 = uuidSetNew("uuid-1", 6);
+        uuidSetAdd(us1, 1, 3);
+        uuidSetAdd(us1, 10, 12);
+        listAddNodeTail(gap_log->history, us1);
+
+        /* add uuid-2: [100-101] */
+        uuidSet *us2 = uuidSetNew("uuid-2", 6);
+        uuidSetAdd(us2, 100, 101);
+        listAddNodeTail(gap_log->history, us2);
+
+        /*  history iterator */
+        gtidGaplogHistoryIterator iter;
+        gtidGaplogInitHistoryIterator(&iter, gap_log, 0);
+
+        const char *uuid;
+        size_t uuid_len;
+
+        /* uuid-1: gno=1 */
+        gno_t gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 1);
+        test_assert(uuid_len == 6);
+        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
+
+        /* uuid-1: gno=2 */
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 2);
+        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
+
+        /* uuid-1: gno=3 */
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 3);
+        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
+
+        /* uuid-1: gno=10（ interval） */
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 10);
+        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
+
+        /* uuid-1: gno=11 */
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 11);
+
+        /* uuid-1: gno=12 */
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 12);
+
+        /* uuid-2: gno=100（ uuidSet） */
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 100);
+        test_assert(uuid_len == 6);
+        test_assert(memcmp(uuid, "uuid-2", 6) == 0);
+
+        /* uuid-2: gno=101 */
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 101);
+
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 0);
+        test_assert(uuid == NULL);
+
+        gtidGaplogDeinitHistoryIterator(&iter);
+
+        gtidGaplogInitHistoryIterator(&iter, gap_log, 4);
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 11);
+        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
+        gtidGaplogDeinitHistoryIterator(&iter);
+
+        gtidGaplogRelease(gap_log);
+        zfree(gap_log);
+    }
+
+    TEST("gtid - gapLog history iterator Seek by index") {
+        gtidGaplog *gap_log = gtidGaplogNew();
+
+        uuidSet *us1 = uuidSetNew("uuid-1", 6);
+        uuidSetAdd(us1, 1, 3);
+        uuidSetAdd(us1, 10, 12);
+        listAddNodeTail(gap_log->history, us1);
+
+        uuidSet *us2 = uuidSetNew("uuid-2", 6);
+        uuidSetAdd(us2, 100, 101);
+        listAddNodeTail(gap_log->history, us2);
+
+        const char *uuid;
+        size_t uuid_len;
+
+        gtidGaplogHistoryIterator iter;
+        gtidGaplogInitHistoryIterator(&iter, gap_log, 0);
+        gno_t gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 1);
+        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
+        gtidGaplogDeinitHistoryIterator(&iter);
+
+        gtidGaplogInitHistoryIterator(&iter, gap_log, 4);
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 11);
+        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
+        gtidGaplogDeinitHistoryIterator(&iter);
+
+        gtidGaplogInitHistoryIterator(&iter, gap_log, 6);
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 100);
+        test_assert(memcmp(uuid, "uuid-2", 6) == 0);
+        gtidGaplogDeinitHistoryIterator(&iter);
+
+        gtidGaplogInitHistoryIterator(&iter, gap_log, 7);
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 101);
+        test_assert(memcmp(uuid, "uuid-2", 6) == 0);
+        gtidGaplogDeinitHistoryIterator(&iter);
+
+        gtidGaplogInitHistoryIterator(&iter, gap_log, 8);
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 0);
+        test_assert(uuid == NULL);
+        gtidGaplogDeinitHistoryIterator(&iter);
+
+        gtidGaplogInitHistoryIterator(&iter, gap_log, 0);
+        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
+        test_assert(gno == 1);
+        gtidGaplogDeinitHistoryIterator(&iter);
+
+        gtidGaplogRelease(gap_log);
+        zfree(gap_log);
+    }
+
+    TEST("gtid - gapLog trim basic") {
+        
+        gtidGaplog *gap_log = gtidGaplogNew();
+
+        
+        skiplist *sl = skiplistCreate(&gtid_skip_type);
+
+        /* add key  gno=2 */
+        {
+            gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
+            gtidGaplogKeysPrepareBuilder(&builder, 2);
+            sds k1 = sdsnew("trimkey1");
+            sds k2 = sdsnew("trimkey2");
+            builder.keys_infos[builder.numkeys++] =
+                gtidGaplogKeyNew(0, OBJ_STRING, k1, NULL, 0);
+            builder.keys_infos[builder.numkeys++] =
+                gtidGaplogKeyNew(0, OBJ_STRING, k2, NULL, 0);
+            gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
+            gtidGaplogDeinitKeysBuilder(&builder);
+
+            skiplistInsert(sl, 2, keys, 1); 
+        }
+        test_assert(sl->length == 1);
+
+        sds uuid_key = sdsnew("uuid-A");
+        dictAdd(gap_log->data, uuid_key, sl);
+        gap_log->size = 1;
+
+        uuidSet *us = uuidSetNew("uuid-A", 6);
+        uuidSetAdd(us, 2, 2);
+        listAddNodeTail(gap_log->history, us);
+
+        int trimmed = gtidGaplogTrim(gap_log, 1);
+        test_assert(trimmed == 1);
+        test_assert(gap_log->size == 0); 
+        test_assert(listLength(gap_log->history) == 0); 
+
+        dictEmpty(gap_log->data, NULL);
+        gtidGaplogRelease(gap_log);
+        zfree(gap_log);
+    }
+
+    TEST("gtid - readBacklogIterator init and deinit") {
+        readBacklogIterator it;
+        readBacklogIteratorInit(&it);
+        test_assert(it.backlog == -1);
+        test_assert(it.mock.querybuf != NULL);
+        test_assert(sdslen(it.mock.querybuf) == 0);
+        test_assert(it.mock.qb_pos == 0);
+
+        readBacklogIteratorDeinit(&it);
+        test_assert(it.backlog == -1);  
+        test_assert(it.mock.querybuf == NULL);
+    }
+
+    TEST("gtid - readBacklogIterator SeekTo basic (init + no-op)") {
+        readBacklogIterator it;
+        readBacklogIteratorInit(&it);
+        test_assert(it.backlog == -1);
+
+        readBacklogIteratorSeekTo(&it, 100);
+        test_assert(it.backlog == 100);
+        test_assert(sdslen(it.mock.querybuf) == 0);
+        test_assert(it.mock.qb_pos == 0);
+
+        /* no-op seek：offset == cur */
+        readBacklogIteratorSeekTo(&it, 100);
+        test_assert(it.backlog == 100);
+        test_assert(it.mock.qb_pos == 0);
+
+        readBacklogIteratorDeinit(&it);
+    }
+
+    TEST("gtid - readBacklogIterator SeekTo forward within buffer") {
+        readBacklogIterator it;
+        readBacklogIteratorInit(&it);
+
+        readBacklogIteratorSeekTo(&it, 0);
+        it.backlog = 1200;
+        it.mock.querybuf = sdscatlen(it.mock.querybuf, "x", 200);  
+        it.mock.qb_pos = 0;
+
+
+        readBacklogIteratorSeekTo(&it, 1050);
+        test_assert(it.backlog == 1200);
+        test_assert(it.mock.qb_pos == 0);  
+        test_assert(sdslen(it.mock.querybuf) == 150);  
+
+        readBacklogIteratorDeinit(&it);
+    }
+
+    TEST("gtid - readBacklogIterator SeekTo forward past buffer (clear+seek)") {
+        readBacklogIterator it;
+        readBacklogIteratorInit(&it);
+
+        it.backlog = 1000;
+        it.mock.querybuf = sdscatlen(it.mock.querybuf, "x", 100);  /* [1000, 1100) */
+        it.mock.qb_pos = 0;
+
+        readBacklogIteratorSeekTo(&it, 1200);
+        test_assert(it.backlog == 1200);
+        test_assert(sdslen(it.mock.querybuf) == 0);
+        test_assert(it.mock.qb_pos == 0);
+
+        readBacklogIteratorDeinit(&it);
+    }
+
+    TEST("gtid - readBacklogIterator SeekTo rewind (clear+seek)") {
+        readBacklogIterator it;
+        readBacklogIteratorInit(&it);
+
+        it.backlog = 1000;
+        it.mock.querybuf = sdscatlen(it.mock.querybuf, "x", 200);
+        it.mock.qb_pos = 0;
+
+        readBacklogIteratorSeekTo(&it, 500);
+        test_assert(it.backlog == 500);
+        test_assert(sdslen(it.mock.querybuf) == 0);
+        test_assert(it.mock.qb_pos == 0);
+
+        readBacklogIteratorDeinit(&it);
+    }
+
+    TEST("gtid - readBacklogIterator ParseNext single command") {
+        server.repl_backlog_size = 2048;
+        /* Set up backlog with a single SET command */
+        if (server.repl_backlog == NULL) ctrip_createReplicationBacklog();
+        sds cmd = sdsnew("*3\r\n$3\r\nset\r\n$3\r\nkey\r\n$5\r\nvalue\r\n");
+        feedReplicationBacklog(cmd, sdslen(cmd));
+        long long start_off = gtidGetBacklogOffset() ;
+
+        readBacklogIterator it;
+        readBacklogIteratorInit(&it);
+        readBacklogIteratorSeekTo(&it, 1);
+
+        robj **argv;
+        int argc;
+        ssize_t consumed = readBacklogIteratorParseNext(&it, &argv, &argc);
+        test_assert(consumed > 0);
+        test_assert(argc == 3);
+        test_assert(!strcasecmp(argv[0]->ptr, "set"));
+        test_assert(!strcasecmp(argv[1]->ptr, "key"));
+        test_assert(!strcasecmp(argv[2]->ptr, "value"));
+        test_assert(it.backlog == start_off + consumed);
+
+        readBacklogIteratorDeinit(&it);
+        sdsfree(cmd);
     }
 
     return error;
