@@ -1,0 +1,4 @@
+{
+  "name": "hstrlen",
+  "parse": "cmdParseOneSubkey"
+}

@@ -1,0 +1,4 @@
+{
+  "name": "hget",
+  "parse": "cmdParseOneSubkey"
+}

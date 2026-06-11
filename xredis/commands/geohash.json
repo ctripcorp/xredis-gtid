@@ -1,0 +1,4 @@
+{
+  "name": "geohash",
+  "parse": "cmdParseSingleKeySubkeys"
+}
