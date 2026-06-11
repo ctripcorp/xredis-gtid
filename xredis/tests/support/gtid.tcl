@@ -81,3 +81,73 @@ proc repl_ack_off_aligned {master} {
 
     set _ $aligned
 }
+
+proc get_gaplog_entries {client} {
+    set info [$client INFO gtid]
+    foreach line [split $info "\r\n"] {
+        if {[string match "gtid_gaplog_entries:*" $line]} {
+            return [string range $line 20 end]
+        }
+    }
+    return 0
+}
+
+proc get_slave_gtid_uuid {client} {
+    set seq [$client GTIDX seq gtid.set]
+    set parts [split $seq ","]
+    if {[llength $parts] >= 2} {
+        set uuid_gno [lindex $parts 1]
+        set uuid [lindex [split $uuid_gno ":"] 0]
+        return $uuid
+    } elseif {[llength $parts] == 1} {
+        set uuid_gno [lindex $parts 0]
+        set uuid [lindex [split $uuid_gno ":"] 0]
+        return $uuid
+    }
+    return ""
+}
+
+
+
+proc get_info_property {r section line property} {
+    set str [$r info $section]
+    if {[regexp ".*${line}:\[^\r\n\]*${property}=(\[^,\r\n\]*).*" $str match submatch]} {
+        return $submatch
+    }
+    return ""
+}
+
+proc get_slave_gtid_uuid {client} {
+    set info [$client INFO gtid]
+    foreach line [split $info "\r\n"] {
+        if {[string match "gtid_uuid:*" $line]} {
+            return [string range $line 10 end]
+        }
+    }
+    return ""
+}
+
+
+proc get_gaplog_entries {client} {
+    set len [$client GTIDX GAPLOG LEN]
+    return $len
+}
+
+
+proc get_uuid {client} {
+    return [get_slave_gtid_uuid $client]
+}
+
+proc get_xsync_continue_stat {S} { return [get_info_property $S gtid gtid_sync_stat xsync_xcontinue] }
+proc wait_xsync_continue_stat {S o} {
+    wait_for_condition 50 100 { [get_xsync_continue_stat $S] > $o } else {
+        if {[get_xsync_continue_stat $S] > $o} return
+        fail "xcontinue not inc"
+    }
+}
+proc replicaof_xcontinue {S Mh Mp} {
+    set o [get_xsync_continue_stat $S]; $S replicaof $Mh $Mp; wait_for_sync $S
+    wait_xsync_continue_stat $S $o; after 200
+}
+
+proc gaploglen {c} { return [$c GTIDX GAPLOG LEN] }
