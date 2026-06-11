@@ -1,0 +1,4 @@
+{
+  "name": "zrem",
+  "parse": "cmdParseSingleKeySubkeys"
+}

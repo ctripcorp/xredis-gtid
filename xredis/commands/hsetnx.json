@@ -1,0 +1,4 @@
+{
+  "name": "hsetnx",
+  "parse": "cmdParseOneSubkey"
+}

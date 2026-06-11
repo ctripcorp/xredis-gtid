@@ -1,0 +1,4 @@
+{
+  "name": "hset",
+  "parse": "cmdParseHset"
+}

@@ -1,0 +1,4 @@
+{
+  "name": "hincrby",
+  "parse": "cmdParseOneSubkey"
+}
