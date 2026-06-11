@@ -60,6 +60,11 @@ typedef struct uuidSet {
     struct uuidSet *next;
 } uuidSet;
 
+typedef struct uuidSetIterator {
+    uuidSet *uuid_set;
+    gtidIntervalNode *next;
+} uuidSetIterator;
+
 typedef struct gtidSet {
     /* next gno for current if > 0 */
     gno_t curnext;
@@ -70,6 +75,11 @@ typedef struct gtidSet {
     struct uuidSet* header;
     struct uuidSet* tail;
 } gtidSet;
+
+typedef struct gtidSetIterator {
+    gtidSet *gtid_set;
+    uuidSet *next;
+} gtidSetIterator;
 
 typedef struct gtidStat {
    size_t used_memory;
@@ -97,6 +107,10 @@ gno_t uuidSetCount(uuidSet* uuid_set);
 int uuidSetContains(uuidSet* uuid_set, gno_t gno);
 size_t uuidSetEstimatedEncodeBufferSize(uuidSet* uuid_set);
 void uuidSetGetStat(uuidSet *uuid_set, gtidStat *stat);
+int uuidSetInitIterator(uuidSetIterator* iterator, uuidSet* gtid_set);
+void uuidSetDeinitIterator(uuidSetIterator* iterator);
+gtidIntervalNode* uuidSetIteratorNext(uuidSetIterator* iterator);
+int uuidSetIteratorSeek(uuidSetIterator* iterator, gno_t gno);
 
 gtidSet* gtidSetNew();
 void gtidSetFree(gtidSet* gtid_set);
@@ -115,6 +129,11 @@ size_t gtidSetEstimatedEncodeBufferSize(gtidSet* gtid_set);
 void gtidSetGetStat(gtidSet *gtid_set, gtidStat *stat);
 uuidSet* gtidSetFind(gtidSet* gtid_set, const char* uuid, size_t uuid_len);
 int gtidSetRelated(gtidSet *set1, gtidSet *set2);
+int gtidSetInitIterator(gtidSetIterator* iterator, gtidSet* gtid_set);
+void gtidSetDeinitIterator(gtidSetIterator* iterator);
+uuidSet* gtidSetIteratorNext(gtidSetIterator* iterator);
+int gtidSetIteratorSeek(gtidSetIterator* iterator, const char* uuid, size_t uuid_len);
+
 
 /* Cache current uuid set to skip uuid compare. Note that it would crash
  * if current uuid set not cached or removed. */
@@ -183,13 +202,79 @@ typedef struct gtidSeqStat {
 } gtidSeqStat;
 
 gtidSeq *gtidSeqCreate();
+void gtidSeqRebaseOffset(gtidSeq *seq, size_t offset);
 void gtidSeqDestroy(gtidSeq *seq);
 void gtidSeqAppend(gtidSeq *seq, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
 void gtidSeqTrim(gtidSeq *seq, long long until);
 size_t gtidSeqEstimatedEncodeBufferSize(gtidSeq* seq);
 ssize_t gtidSeqEncode(char *buf, size_t maxlen, gtidSeq* seq);
+long long gtidSeqLookup(gtidSeq *seq, char* uuid, size_t uuid_len, gno_t gno);
 long long gtidSeqXsync(gtidSeq *seq, gtidSet *req, gtidSet **pcont);
 gtidSet *gtidSeqPsync(gtidSeq *seq, long long offset);
 void gtidSeqGetStat(gtidSeq *seq, gtidSeqStat *stat);
+
+
+/*skiplist*/
+
+#define SKIPLIST_MAXLEVEL 16
+
+typedef struct skiplistNode {
+    long long score;                     
+    void *value;    
+    struct skiplistNode *backward;
+    struct {
+        struct skiplistNode *forward; 
+    } level[]; 
+} skiplistNode;
+
+typedef struct skipType {
+    void (*freeValue)(void* value);
+} skipType;
+
+typedef struct skiplist {
+    skiplistNode *header;
+    skiplistNode *tail;
+    unsigned long length;
+    int level;
+    skipType* type;
+} skiplist;
+struct
+skiplist* skiplistCreate(skipType* type);
+void skiplistFree(skiplist *sl);
+int skiplistInsert(skiplist *sl, long long score, void *value, int score_unique);
+int skiplistDelete(skiplist *sl, long long score);
+skiplistNode* skiplistFirst(skiplist *sl);
+skiplistNode* skiplistFindFirstGte(skiplist *sl, long long target);
+
+typedef struct skiplistIterator {
+    skiplist *sl;
+    skiplistNode *next;
+    int reverse;
+} skiplistIterator;
+
+/* Initialize an iterator for forward traversal (smallest score first).
+ * Returns 0 on success. */
+int skiplistInitIterator(skiplistIterator *it, skiplist *sl);
+
+/* Initialize an iterator for reverse traversal (largest score first).
+ * Returns 0 on success. */
+int skiplistReverseInitIterator(skiplistIterator *it, skiplist *sl);
+
+/* Release any resources held by the iterator. Currently a no-op, kept
+ * for API symmetry. */
+void skiplistDeinitIterator(skiplistIterator *it);
+
+/* Return the current node and advance the iterator. Returns NULL once
+ * the iterator is past the end (or past the start, for reverse). */
+skiplistNode *skiplistIteratorNext(skiplistIterator *it);
+
+/* Reposition the iterator to the first node with score >= target.
+ * Returns 1 if such a node exists, 0 otherwise (in which case the
+ * iterator will yield NULL on subsequent Next calls).
+ *
+ * Note: for a reverse iterator, "target" still refers to the score
+ * ordering, not the iteration direction.
+ */
+int skiplistIteratorSeek(skiplistIterator *it, long long target);
 
 #endif  /* __REDIS_CTRIP_GTID_H */
