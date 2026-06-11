@@ -160,7 +160,7 @@ gtidIntervalSkipList *gtidIntervalSkipListDup(gtidIntervalSkipList *gsl) {
     return dup;
 }
 
-static int gitdIntervalRandomLevel(void) {
+static int gtidIntervalRandomLevel(void) {
     int level = 1;
     while ((rand()&0xFFFF) < (GTID_INTERVAL_SKIPLIST_P * 0xFFFF))
         level += 1;
@@ -204,7 +204,7 @@ gno_t gtidIntervalSkipListAdd(gtidIntervalSkipList *gsl, gno_t start, gno_t end)
 
     if (lefts[0] == rights[0]) {
         /* none overlaps with [start, end]: create new one. */
-        level = gitdIntervalRandomLevel();
+        level = gtidIntervalRandomLevel();
         x = gtidIntervalNodeNew(level,start,end);
 
        if (level > gsl->level) {
@@ -292,7 +292,7 @@ gno_t gtidIntervalSkipListRemove(gtidIntervalSkipList *gsl, gno_t start,
 
     if (rights[0]->end < lefts[0]->start) {
         /* remove gno within one node: split it. */
-        int level = gitdIntervalRandomLevel();
+        int level = gtidIntervalRandomLevel();
         x = gtidIntervalNodeNew(level,end+1,lefts[0]->end);
         lefts[0]->end = start-1;
 
@@ -371,6 +371,24 @@ int gtidIntervalSkipListContains(gtidIntervalSkipList *gsl, gno_t gno) {
             x = x->forwards[i];
     }
     return x->start <= gno && gno <= x->end;
+}
+
+/* Seek-style find: return the interval node containing `gno`, or the
+ * first interval node whose start is greater than `gno` if no interval
+ * contains it. Returns NULL if `gno` is past the last interval or the
+ * list is empty. */
+gtidIntervalNode* gtidIntervalSkipListFindFirstGte(gtidIntervalSkipList *gsl,
+        gno_t gno) {
+    int i;
+    gtidIntervalNode *x = gsl->header;
+    assert(gno >= GTID_GNO_INITIAL);
+    for (i = gsl->level-1; i >= 0; i--) {
+        while (x->forwards[i] && x->forwards[i]->start <= gno)
+            x = x->forwards[i];
+    }
+    if (x != gsl->header && gno <= x->end)
+        return x;
+    return x->forwards[0];
 }
 
 gno_t gtidIntervalSkipListNext(gtidIntervalSkipList *gsl, int update) {
@@ -561,6 +579,28 @@ int uuidSetContains(uuidSet* uuid_set, gno_t gno) {
 
 gno_t uuidSetNext(uuidSet* uuid_set, int update) {
     return gtidIntervalSkipListNext(uuid_set->intervals, update);
+}
+
+
+int uuidSetInitIterator(uuidSetIterator* iterator, uuidSet* uuid_set) {
+    iterator->uuid_set = uuid_set;
+    iterator->next = uuid_set->intervals->header->forwards[0];
+    return 1;
+}
+void uuidSetDeinitIterator(uuidSetIterator* iterator) {
+
+}
+gtidIntervalNode* uuidSetIteratorNext(uuidSetIterator* iterator) {
+    if (iterator->next == NULL) return NULL;
+    gtidIntervalNode* node = iterator->next;
+    iterator->next = node->forwards[0];
+    return node;
+}
+int uuidSetIteratorSeek(uuidSetIterator* iterator, gno_t gno) {
+    if (iterator->uuid_set == NULL) return 0;
+    iterator->next = gtidIntervalSkipListFindFirstGte(
+            iterator->uuid_set->intervals, gno);
+    return iterator->next != NULL;
 }
 
 gtidSet* gtidSetNew() {
@@ -764,6 +804,7 @@ gno_t gtidSetDiff(gtidSet* dst, gtidSet* src) {
             if (dst->header == cur) dst->header = next;
             if (dst->tail == cur) dst->tail = prev;
             if (dst->cached == cur) dst->cached = NULL;
+            if (dst->current == cur) dst->current = NULL;
             uuidSetFree(cur);
         } else {
             prev = cur;
@@ -836,6 +877,42 @@ int gtidSetRelated(gtidSet *set1, gtidSet *set2) {
         if (gtidSetFind(set1,uuid_set->uuid,uuid_set->uuid_len)) return 1;
         uuid_set = uuid_set->next;
     }
+    return 0;
+}
+
+
+/*gtidSet iterator*/
+int gtidSetInitIterator(gtidSetIterator* iterator, gtidSet* gtid_set) {
+    iterator->gtid_set = gtid_set;
+    iterator->next = gtid_set->header;
+    return 1;
+}
+void gtidSetDeinitIterator(gtidSetIterator* iterator) {
+
+}
+uuidSet* gtidSetIteratorNext(gtidSetIterator* iterator) {
+    if (iterator->next == NULL) return NULL;
+    uuidSet* cur = iterator->next;
+    iterator->next = cur->next;
+    return cur;
+}
+int gtidSetIteratorSeek(gtidSetIterator* iterator, const char* uuid,
+        size_t uuid_len) {
+    if (iterator->gtid_set == NULL) return 0;
+    uuidSet *cur = iterator->gtid_set->header;
+    if (uuid == NULL) {
+        iterator->next = cur;
+        return cur != NULL;
+    }
+    while (cur) {
+        if (cur->uuid_len == uuid_len &&
+                memcmp(cur->uuid, uuid, uuid_len) == 0) {
+            iterator->next = cur;
+            return 1;
+        }
+        cur = cur->next;
+    }
+    iterator->next = NULL;
     return 0;
 }
 
@@ -1107,6 +1184,22 @@ ssize_t gtidSeqEncode(char *buf, size_t maxlen, gtidSeq* seq) {
     return len;
 }
 
+
+long long gtidSeqLookup(gtidSeq *seq, char* uuid, size_t uuid_len, gno_t gno) {
+    gtidSegment *seg = seq->lastseg;
+    while (seg) {
+        if (seg->uuid_len == uuid_len &&
+            memcmp(seg->uuid, uuid, uuid_len) == 0 &&
+            gno >= seg->base_gno + (gno_t)seg->tgno &&
+            gno < seg->base_gno + (gno_t)seg->ngno) {
+            size_t idx = (size_t)(gno - seg->base_gno);
+            return seg->base_offset + seg->deltas[idx];
+        }
+        seg = seg->prev;
+    }
+    return -1;
+}
+
 /* Locate xsync continue position, return continue offset and gitset from
  * continue to end. */
 long long gtidSeqXsync(gtidSeq *seq, gtidSet *req, gtidSet **pcont) {
@@ -1183,4 +1276,12 @@ void gtidSeqGetStat(gtidSeq *seq, gtidSeqStat *stat) {
     stat->freeseg_memory = seq->nfreeseg*sizeof(gtidSegment) +
         seq->nfreeseg_deltas*sizeof(segoff_t);
     stat->used_memory = stat->segment_memory + stat->freeseg_memory;
+}
+
+void gtidSeqRebaseOffset(gtidSeq *seq, size_t offset) {
+    gtidSegment *seg = seq->firstseg;
+    while (seg) {
+        seg->base_offset += offset;
+        seg = seg->next;
+    }
 }

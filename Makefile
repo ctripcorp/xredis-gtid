@@ -17,7 +17,8 @@ FINAL_CFLAGS=$(STD) $(OPTIMIZATION) $(CFLAGS) -I./include -I./
 
 CTRIP_CC=$(CC) $(FINAL_CFLAGS)
 GTID_LIB=lib/libgtid.a
-GTID_OBJ=gtid.o gtid_util.o
+GTID_OBJ=gtid.o gtid_util.o gtid_skiplist.o
+XREDIS_COMMANDS=./xredis/xredis_commands.def
 AR=ar
 ARFLAGS=rcu
 DEBUG=-g -ggdb
@@ -31,15 +32,18 @@ INSTALL=cp -rf
 	echo $(CTRIP_CC)
 	$(CTRIP_CC) $(DEBUG) -MMD -o $@ -c $<
 
+all: $(GTID_LIB)
 
-$(GTID_LIB): $(GTID_OBJ)
+$(XREDIS_COMMANDS):
+	python ./utils/generate_cmdparse_commands.py
+
+
+$(GTID_LIB): $(GTID_OBJ) $(XREDIS_COMMANDS)
 	@mkdir -p lib
 	$(AR) $(ARFLAGS) $(GTID_LIB) $(GTID_OBJ)
 
 bench:  $(GTID_LIB) ./gtid_bench.o
-	$(CTRIP_CC)  -g -ggdb  -o  gtid_bench  gtid_bench.o ./lib/libgtid.a -lm -ldl
-
-all: $(GTID_LIB)
+	$(CTRIP_CC)  -g -ggdb  -o  gtid_bench  gtid_bench.o ./lib/libgtid.a -lm -ldl 
 
 noopt:
 	$(MAKE) OPTIMIZATION="-O0"
@@ -47,6 +51,7 @@ noopt:
 clean:
 	rm -rf $(GTID_LIB) $(GTID_OBJ) gtid_test.o gtid_bench.o *.d
 	rm -rf gtid_test debug gtid_bench
+	rm -rf xredis/xredis_commands.def
 
 test:  $(GTID_LIB) ./gtid_test.o
 	$(CTRIP_CC)  -g -ggdb  -o  gtid_test  gtid_test.o ./lib/libgtid.a -lm -ldl
