@@ -53,16 +53,5 @@ typedef struct cmdParseCommandDef {
     void (*parse)(int dbid, struct redisCommand *cmd, robj **argv, int argc, void *ctx, cmdParseOnKeyFn on_key);
 } cmdParseCommandDef;
 
-
-
-int cmdParseCountKeys(struct redisCommand *cmd, robj **argv, int argc);
-
 void cmdParseKeys(int dbid, struct redisCommand *cmd, robj **argv, int argc, void *ctx, cmdParseOnKeyFn on_key);
-
-
-
-int (*cmdParseGetCountFunc(const char *cmd_name))(robj **argv, int argc);
-
-void (*cmdParseGetParseFunc(const char *cmd_name))(int dbid, struct redisCommand *cmd, robj **argv, int argc, void *ctx, cmdParseOnKeyFn on_key);
-
 #endif
