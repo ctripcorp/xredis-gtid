@@ -296,19 +296,6 @@ void ctrip_feedAppendOnlyFile(struct redisCommand *cmd, int dictid,
         feedAppendOnlyFile(cmd,dictid,argv,argc);
 }
 
-void gtidFreeReplicationBacklog() {
-    zfree(server.repl_backlog);
-    server.repl_backlog = NULL;
-}
-
-void gtidCreateReplicationBacklog() {
-    serverAssert(server.repl_backlog == NULL);
-    server.repl_backlog = zmalloc(server.repl_backlog_size);
-    server.repl_backlog_histlen = 0;
-    server.repl_backlog_idx = 0;
-    server.repl_backlog_off = server.master_repl_offset+1;
-}
-
 long long gtidGetBacklogOffset() {
     return server.repl_backlog_off;
 }

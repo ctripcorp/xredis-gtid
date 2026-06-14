@@ -48,15 +48,6 @@ long long gtidGetBacklogHistlen() {
     return server.repl_backlog-> histlen;
 }
 
-void gtidFreeReplicationBacklog() {
-    freeReplicationBacklog();
-}
-
-void gtidCreateReplicationBacklog() {
-    createReplicationBacklog();
-}
-
-
 /* getKeysResult*/
 int gtidGetKeysResultKeyIndex(getKeysResult* result, int index) {
     return result->keys[index].pos;

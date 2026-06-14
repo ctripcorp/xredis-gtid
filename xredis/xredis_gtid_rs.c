@@ -371,8 +371,8 @@ void ctrip_freeReplicationBacklog(void) {
 void ctrip_resetReplicationBacklog(void) {
     /* See resizeReplicationBacklog for more details */
     if (server.repl_backlog != NULL) {
-        gtidFreeReplicationBacklog();
-        gtidCreateReplicationBacklog();
+        ctrip_freeReplicationBacklog();
+        ctrip_createReplicationBacklog();
     }
     /* gtid_seq became invalid if master offset bumped. */
     if (server.gtid_seq != NULL) {
