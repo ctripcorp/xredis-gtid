@@ -17,8 +17,6 @@ int gtidGetKeysResultKeyIndex(getKeysResult* result, int index);
 /* replication */
 long long gtidGetBacklogOffset();
 long long gtidGetBacklogHistlen();
-void gtidFreeReplicationBacklog();
-void gtidCreateReplicationBacklog();
 void ctrip_resizeReplicationBacklog(long long newsize);
 void ctrip_replicationFeedSlaves(list* saves,int dictid, robj **argv,
         int argc, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
