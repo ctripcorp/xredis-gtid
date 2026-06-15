@@ -212,7 +212,7 @@ invalid:
     return;
 }
 
-syncRequest *masterParseSyncRequest(client *c) {
+syncRequest *masterParseSyncRequest(client *c, long long psync_offset) {
     syncRequest *request = syncRequestNew();
     char *mode = c->argv[0]->ptr;
     sds cmdrepr = sdsempty();
@@ -232,8 +232,15 @@ syncRequest *masterParseSyncRequest(client *c) {
     sdsfree(cmdrepr);
 
     if (!strcasecmp(mode,"psync")) {
-        masterParsePsyncRequest(request,c->argv[1],c->argv[2]);
+        if (psync_offset != PSYNC_OFFSET_UNSET) {
+            request->mode = REPL_MODE_PSYNC;
+            request->p.replid = sdsdup(c->argv[1]->ptr);
+            request->p.offset = psync_offset;
+        } else {
+            masterParsePsyncRequest(request,c->argv[1],c->argv[2]);
+        }
     } else if (!strcasecmp(mode,"xsync")) {
+        serverAssert(psync_offset == PSYNC_OFFSET_UNSET);
         masterParseXsyncRequest(request,c->argv[1],c->argv[2],c->argc-3,c->argv+3);
     } else {
         request->mode = REPL_MODE_UNSET;
@@ -676,14 +683,14 @@ void masterSetupPartialSynchronization(client *c, long long offset,
                           NULL);
 }
 
-int masterReplySyncRequest(client *c,  long long psync_offset, syncResult *result) {
+int masterReplySyncRequest(client *c, syncResult *result) {
     int ret = result->action == SYNC_ACTION_FULL ? C_ERR : C_OK;
 
     if (result->action == SYNC_ACTION_NOP) {
         serverLog(LL_NOTICE,
                 "[%s] Partial sync request from %s handle by vanilla redis.",
                 replModeName(result->request_mode), replicationGetSlaveName(c));
-        ret = gtidMasterTryPartialResynchronization(c, psync_offset);
+        ret = gtidMasterTryPartialResynchronization(c, result->offset);
     } else if (result->action == SYNC_ACTION_XCONTINUE) {
         char *buf;
         int buflen;
@@ -751,9 +758,9 @@ int masterReplySyncRequest(client *c,  long long psync_offset, syncResult *resul
 }
 
 int ctrip_masterTryPartialResynchronization(client *c, long long psync_offset) {
-    syncRequest *request = masterParseSyncRequest(c);
+    syncRequest *request = masterParseSyncRequest(c, psync_offset);
     syncResult *result = masterAnaSyncRequest(request);
-    int ret = masterReplySyncRequest(c, psync_offset, result);
+    int ret = masterReplySyncRequest(c, result);
     syncRequestFree(request);
     syncResultFree(result);
     return ret;
