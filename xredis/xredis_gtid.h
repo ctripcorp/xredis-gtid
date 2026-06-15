@@ -266,8 +266,8 @@ ssize_t rdbSaveAuxField(rio *rdb, void *key, size_t keylen, void *val, size_t va
  * ================================================================ */
 typedef struct gtidGaplogKey {
   unsigned long long dbid:4;      /* max 16 db */
-  unsigned long long key_type:4;  /* OBJ_STRING/OBJ_LIST/OBJ_SET/OBJ_ZSET/OBJ_HASH */
-  unsigned long long subkeys_count:56;
+  unsigned long long key_type:8;  /* OBJ_STRING/OBJ_LIST/OBJ_SET/OBJ_ZSET/OBJ_HASH */
+  unsigned long long subkeys_count:52;
   sds key;                        /* key (sdsdup ) */
   sds* subkeys;                   /* subkeys (sdsdup ) */
 } gtidGaplogKey;

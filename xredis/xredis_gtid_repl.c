@@ -464,12 +464,12 @@ void masterAnaXsyncRequest(syncResult *result, syncRequest *request) {
                     " psync from: offset=%lld", psync_offset);
         }
     }
-    if (server.repl_mode->mode == REPL_MODE_PSYNC && psync_offset < server.repl_backlog_off) {
+    if (server.repl_mode->mode == REPL_MODE_PSYNC && psync_offset < gtidGetBacklogOffset()) {
         result->action = SYNC_ACTION_FULL;
         result->msg = sdscatprintf(sdsempty(),
                 "psync offset(%lld) not in backlog [%lld,%lld)",
-                psync_offset, server.repl_backlog_off,
-                server.repl_backlog_off+server.repl_backlog_histlen);
+                psync_offset, gtidGetBacklogOffset(),
+                gtidGetBacklogOffset()+gtidGetBacklogHistlen());
         goto end;
     } 
     result->offset = psync_offset;
@@ -652,7 +652,7 @@ void masterSetupPartialSynchronization(client *c, long long offset,
         freeClientAsync(c);
         return;
     }
-    serverAssert(offset >= server.repl_backlog_off);
+    serverAssert(offset >= gtidGetBacklogOffset());
     if (limit > 0) {
         sent = addReplyReplicationBacklogLimited(c,offset,limit);
     } else {
