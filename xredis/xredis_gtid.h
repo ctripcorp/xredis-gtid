@@ -339,7 +339,7 @@ void gtidGaplogDeinitHistoryIterator(gtidGaplogHistoryIterator* iter);
 
 /* readBacklogIterator: iterate commands from replication backlog with querybuf reuse.
  * Use Init/SeekTo/ParseNext/Deinit. backlog == -1 means "not seeked yet".
- * Full struct definition is in xredis_gtid_repl.c (where `client` is complete). */
+ * Full struct definition is in xredis_gtid_gap_log.c (where `client` is complete). */
 typedef struct readBacklogIterator readBacklogIterator;
 
 void readBacklogIteratorInit(readBacklogIterator *it);
@@ -351,6 +351,7 @@ void parseMultiCommand(gtidGaplogKeysBuilder *build,
                        readBacklogIterator *it,
                        long long select_dbid);
 int parseGtidCommand(gtidGaplogKeysBuilder *builder, robj **argv, int argc);
+void gtidGaplogFillFromGtidSet(gtidSet *mlost);
 void addReplyGtidGaplogKeys(client* c, gtidGaplogKeys* keys);
 void gtidGaplogKeysRelease(void* keys);
 gtidGaplogKey* gtidGaplogKeyNew(int dbid, int type, sds key, sds* subkeys, int subkeys_count);
@@ -358,7 +359,11 @@ void gtidGaplogKeyRelease(gtidGaplogKey* key);
 int processMultibulkBuffer(client* c);
 
 
+
 /* gtid test */
 int gtidTest(int argc, char **argv, int accurate);
+int replTest(int argc, char **argv, int accurate);
+int gapLogTest(int argc, char **argv, int accurate);
+int readBacklogIteratorTest(int argc, char **argv, int accurate);
 
 #endif
