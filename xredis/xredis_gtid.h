@@ -301,6 +301,18 @@ void gtidGaplogReset(gtidGaplog* gtid_gap_log);
 void gtidGaplogRelease(gtidGaplog* gaplog);
 int gtidGaplogTrim(gtidGaplog* log ,size_t size);
 
+int gtidGaplogInsert(gtidGaplog* gaplog, sds uuid, gno_t gno, gtidGaplogKeys* keys);
+int gtidGaplogDeleteRange(gtidGaplog* gaplog, sds uuid, gno_t start_gno, gno_t end_gno); 
+typedef void (gtidGaplogQueryRangeCallbackFn)(gno_t gno, gtidGaplogKeys* keys, void* ctx);
+int gtidGaplogQueryRange(gtidGaplog* gaplog, sds uuid, gno_t start_gno, gno_t end_gno,
+                         gtidGaplogQueryRangeCallbackFn callback, void* ctx);
+size_t gtidGaplogSize(gtidGaplog* gaplog);
+typedef void (gtidGaplogListCallbackFn)(const char* uuid, size_t uuid_len, gno_t gno, 
+                                    gtidGaplogKeys* keys, void* ctx);
+int gtidGaplogList(gtidGaplog* gaplog, long long start_idx, long long count,
+                   gtidGaplogListCallbackFn callback, 
+                   void* ctx);
+
 typedef struct gtidGaplogDataIterator {
   skiplistIterator sl_iter;
 } gtidGaplogDataIterator;

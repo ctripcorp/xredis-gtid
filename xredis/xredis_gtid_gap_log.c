@@ -290,6 +290,144 @@ int gtidGaplogTrim(gtidGaplog* gap_log ,size_t size) {
     return count;
 }
 
+skipType gtid_skip_type = {
+    .freeValue = gtidGaplogKeysRelease
+};
+
+static inline skiplist* gtidGaplogFindSkiplist(gtidGaplog* gaplog, sds uuid) {
+    dictEntry *de = dictFind(gaplog->data, uuid);
+    return de ? dictGetVal(de) : NULL;
+}
+
+static skiplist* gtidGaplogFindOrCreateSkiplist(gtidGaplog* gaplog, sds uuid) {
+    dictEntry *de = dictFind(gaplog->data, uuid);
+    if (de == NULL) {
+        skiplist *sl = skiplistCreate(&gtid_skip_type);
+        sds uuid_key = sdsdup(uuid);
+        dictAdd(gaplog->data, uuid_key, sl);
+        return sl;
+    }
+    return dictGetVal(de);
+}
+
+static skiplist* gtidGaplogFindSkiplistWithUUID(gtidGaplog* gaplog, 
+                                                 const char* uuid, size_t uuid_len) {
+    sds key = sdsnewlen(uuid, uuid_len);
+    dictEntry *de = dictFind(gaplog->data, key);
+    sdsfree(key);
+    serverAssert(de != NULL);
+    return dictGetVal(de);
+}
+
+int gtidGaplogInsert(gtidGaplog* gaplog, sds uuid, gno_t gno, gtidGaplogKeys* keys) {
+
+    skiplist *sl = gtidGaplogFindOrCreateSkiplist(gaplog, uuid);
+
+    serverAssert(skiplistInsert(sl, gno, keys, 1) != 0);
+
+    uuidSet *last_uuid_set = NULL;
+    listNode *tail_ln = listLast(gaplog->history);
+    if (tail_ln != NULL) {
+        last_uuid_set = (uuidSet*)listNodeValue(tail_ln);
+        if (last_uuid_set->uuid_len != sdslen(uuid) ||
+            memcmp(last_uuid_set->uuid, uuid, sdslen(uuid)) != 0) {
+            last_uuid_set = NULL;
+        }
+    }
+
+    if (last_uuid_set != NULL) {
+        uuidSetAdd(last_uuid_set, gno, gno);
+    } else {
+        uuidSet *new_uuid_set = uuidSetNew(uuid, sdslen(uuid));
+        uuidSetAdd(new_uuid_set, gno, gno);
+        listAddNodeTail(gaplog->history, new_uuid_set);
+    }
+
+    gaplog->size++;
+    
+    if (gaplog->size >
+            (size_t)server.gtid_xsync_max_gap) {
+        gtidGaplogTrim(gaplog,
+                        gaplog->size -
+                        server.gtid_xsync_max_gap);
+    }
+    return 1;
+}
+
+int gtidGaplogDeleteRange(gtidGaplog* gaplog, sds uuid, gno_t start_gno, gno_t end_gno) {
+    serverAssert(start_gno <= end_gno);
+
+    long long deleted = 0;
+    skiplist *sl = gtidGaplogFindSkiplist(gaplog, uuid);
+    if (sl != NULL) {
+
+        gtidGaplogDataIterator iter;
+        gtidGaplogDataInitIterator(&iter, sl, start_gno);
+        gno_t gno = -1;
+        while ((gno = gtidGaplogDataGetGno(&iter)) != -1 && gno <= end_gno) {
+            gtidGaplogDataNext(&iter);
+            if (skiplistDelete(sl, gno)) {
+                deleted++;
+            }
+        }
+        gtidGaplogDeinitDataIterator(&iter);
+        if (sl->length == 0) {
+            dictDelete(gaplog->data, uuid);
+        }
+        gaplog->size -= deleted;
+    }
+
+    gno_t history_removed = 0;
+    listNode *ln = listFirst(gaplog->history);
+    while (ln) {
+        uuidSet *us = listNodeValue(ln);
+        listNode *next_ln = listNextNode(ln);
+        if (us->uuid_len == sdslen(uuid) &&
+            memcmp(us->uuid, uuid, sdslen(uuid)) == 0) {
+            history_removed += uuidSetRemove(us, start_gno, end_gno);
+            if (uuidSetCount(us) == 0) {
+                listDelNode(gaplog->history, ln);
+            }
+        }
+        ln = next_ln;
+    }
+
+    serverAssert(history_removed == deleted);
+    return deleted;
+}
+
+int gtidGaplogQueryRange(gtidGaplog* gaplog, sds uuid, gno_t start_gno, gno_t end_gno,
+                         gtidGaplogQueryRangeCallbackFn callback, void* ctx) {
+    serverAssert(start_gno <= end_gno);
+    skiplist *sl = gtidGaplogFindSkiplist(gaplog, uuid);
+    if (sl == NULL) {
+        return 0;
+    }
+
+    long long count = 0;
+
+    gtidGaplogDataIterator iter;
+    gtidGaplogDataInitIterator(&iter, sl, start_gno);
+
+    gno_t gno;
+    while ((gno = gtidGaplogDataGetGno(&iter)) != -1 && gno <= end_gno) {
+        gtidGaplogKeys *keys = gtidGaplogDataNext(&iter);
+        callback(gno, keys, ctx);
+        count++;
+    }
+
+    gtidGaplogDeinitDataIterator(&iter);
+
+    return count;
+}
+
+size_t gtidGaplogSize(gtidGaplog* gaplog) {
+    if (gaplog == NULL) {
+        return 0;
+    }
+    return gaplog->size;
+}
+
 void gtidGaplogKeysBuilderAdd(gtidGaplogKeysBuilder *builder, int dbid, int type, sds key,
                        sds *subkeys, int subkeys_count)
 {
@@ -319,4 +457,43 @@ void gtidGaplogKeysBuilderAddFromCmd(gtidGaplogKeysBuilder *builder, int dbid, r
     if (argc < 2) return;
     serverAssert( builder != NULL);
     cmdParseKeys(dbid, NULL, args, argc, builder, gtidOnKey);
+}
+
+int gtidGaplogList(gtidGaplog* gaplog, long long start_idx, long long count,
+                  gtidGaplogListCallbackFn callback,
+                   void* ctx) {
+
+    gtidGaplogHistoryIterator hist_iter;
+    gtidGaplogInitHistoryIterator(&hist_iter, gaplog, start_idx);
+
+    gtidGaplogDataIterator data_iter;
+    const char *last_uuid = NULL;
+    skiplist *sl = NULL;
+    int nreply = 0;
+
+    while (nreply < count) {
+        const char *uuid;
+        size_t uuid_len;
+        gno_t gno = gtidGaplogHistoryNext(&hist_iter, &uuid, &uuid_len);
+        if (gno == 0) break;
+
+        if (last_uuid != uuid) {
+            sl = gtidGaplogFindSkiplistWithUUID(gaplog, uuid, uuid_len);
+            gtidGaplogDeinitDataIterator(&data_iter);
+            gtidGaplogDataInitIterator(&data_iter, sl, gno);
+            last_uuid = uuid;
+        } else if (gtidGaplogDataGetGno(&data_iter) != gno) {
+            gtidGaplogDeinitDataIterator(&data_iter);
+            gtidGaplogDataInitIterator(&data_iter, sl, gno);
+        }
+
+        serverAssert(gtidGaplogDataGetGno(&data_iter) == gno);
+        gtidGaplogKeys *keys = gtidGaplogDataNext(&data_iter);
+
+        callback(uuid, uuid_len, gno, keys, ctx);
+        nreply++;
+    }
+    gtidGaplogDeinitDataIterator(&data_iter);
+    gtidGaplogDeinitHistoryIterator(&hist_iter);
+    return nreply;
 }
