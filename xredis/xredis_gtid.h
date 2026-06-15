@@ -236,6 +236,9 @@ void gtidCommand(client *c);
 void gtidxCommand(client *c);
 char *ctrip_receiveSynchronousResponse(connection *conn);
 int ctrip_replicationSetupSlaveForFullResync(client *slave, long long offset);
+/* Sentinel for masterParseSyncRequest: psync_offset not provided by caller,
+ * fall back to parsing the offset from argv[2] via masterParsePsyncRequest. */
+#define PSYNC_OFFSET_UNSET (-1)
 int ctrip_masterTryPartialResynchronization(client *c, long long offset);
 int ctrip_addReplyReplicationBacklog(client *c, long long offset, long long *added);
 int ctrip_slaveTryPartialResynchronizationWrite(connection *conn);
