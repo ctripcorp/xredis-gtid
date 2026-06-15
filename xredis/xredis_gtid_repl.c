@@ -1405,48 +1405,7 @@ int parseGtidCommand(gtidGaplogKeysBuilder *builder, robj **argv, int argc) {
     return 0;  
 }
 
-skipType gtid_skip_type = {
-    .freeValue = gtidGaplogKeysRelease
-};
 
-static int saveGapLogEntry(sds uuid, gno_t gno, gtidGaplogKeys *kis) {
-    serverAssert(kis->size != 0);
-
-
-    dictEntry *de = dictFind(server.gtid_gap_log->data, uuid);
-    skiplist *sl;
-    if (de == NULL) {
-        sl = skiplistCreate(&gtid_skip_type);
-        sds uuid_key = sdsdup(uuid);
-        dictAdd(server.gtid_gap_log->data, uuid_key, sl);
-    } else {
-        sl = dictGetVal(de);
-    }
-
-    serverAssert(skiplistInsert(sl, gno, kis, 1) != 0);
-
-    uuidSet *last_uuid_set = NULL;
-    listNode *tail_ln = listLast(server.gtid_gap_log->history);
-    if (tail_ln != NULL) {
-        last_uuid_set = (uuidSet*)listNodeValue(tail_ln);
-        if (last_uuid_set->uuid_len != sdslen(uuid) ||
-            memcmp(last_uuid_set->uuid, uuid, sdslen(uuid)) != 0) {
-            last_uuid_set = NULL;
-        }
-    }
-
-    if (last_uuid_set != NULL) {
-        uuidSetAdd(last_uuid_set, gno, gno);
-    } else {
-        uuidSet *new_uuid_set = uuidSetNew(uuid, sdslen(uuid));
-        uuidSetAdd(new_uuid_set, gno, gno);
-        listAddNodeTail(server.gtid_gap_log->history, new_uuid_set);
-    }
-
-
-    server.gtid_gap_log->size++;
-    return 1;
-}
 
 void saveGapLogFromGtidSet(gtidSet *mlost) {
     readBacklogIterator it;
@@ -1496,14 +1455,7 @@ void saveGapLogFromGtidSet(gtidSet *mlost) {
                 }
 
                 if (builder.numkeys > 0) {
-                    saveGapLogEntry(uuid, gno, gtidGaplogKeysBuild(&builder));
-                    while (server.gtid_gap_log->size >
-                           (size_t)server.gtid_xsync_max_gap) {
-                        gtidGaplogTrim(server.gtid_gap_log,
-                                       server.gtid_gap_log->size -
-                                       server.gtid_xsync_max_gap);
-                    }
-                    
+                    gtidGaplogInsert(server.gtid_gap_log, uuid, gno, gtidGaplogKeysBuild(&builder));
                 }
                 gtidGaplogDeinitKeysBuilder(&builder);
                 
@@ -1695,6 +1647,7 @@ int gtidTest(int argc, char **argv, int accurate) {
 
     int error = 0;
     server.maxmemory_policy = MAXMEMORY_FLAG_LFU;
+    server.gtid_xsync_max_gap = 10000;
     if (!server.logfile) server.logfile = zstrdup(CONFIG_DEFAULT_LOGFILE);
 
     TEST("gtid - parse xsync request") {
@@ -2057,12 +2010,10 @@ int gtidTest(int argc, char **argv, int accurate) {
     }
 
     TEST("gtid - gapLog data insert and iterate") {
-        /*  data iterator */
         gtidGaplog *gap_log = gtidGaplogNew();
-        skiplist *sl = skiplistCreate(&gtid_skip_type);
-        test_assert(sl != NULL);
+        sds uuid = sdsnew("uuid-test");
 
-        /* add  keys (gno=1) */
+        /* add keys (gno=1) */
         {
             gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
             gtidGaplogKeysPrepareBuilder(&builder, 1);
@@ -2071,12 +2022,12 @@ int gtidTest(int argc, char **argv, int accurate) {
                 gtidGaplogKeyNew(0, OBJ_STRING, k, NULL, 0);
             gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
             gtidGaplogDeinitKeysBuilder(&builder);
-            int ret = skiplistInsert(sl, 1, keys, 1);
+            
+            int ret = gtidGaplogInsert(gap_log, uuid, 1, keys);
             test_assert(ret == 1);
-            gap_log->size++;
         }
 
-        /* add  keys (gno=5) */
+        /* add keys (gno=5) */
         {
             gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
             gtidGaplogKeysPrepareBuilder(&builder, 1);
@@ -2086,21 +2037,25 @@ int gtidTest(int argc, char **argv, int accurate) {
             builder.keys_infos[builder.numkeys++] =
                 gtidGaplogKeyNew(0, OBJ_HASH, k, subs, 1);
             gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
-            gtidGaplogDeinitKeysBuilder(&builder);
-            int ret = skiplistInsert(sl, 5, keys, 1);
+            gtidGaplogDeinitKeysBuilder(&builder);            
+            int ret = gtidGaplogInsert(gap_log, uuid, 5, keys);
             test_assert(ret == 1);
-            gap_log->size++;
         }
 
-       
-        sds uuid_key = sdsnew("uuid-test");
-        dictAdd(gap_log->data, uuid_key, sl);
+        test_assert(gtidGaplogSize(gap_log) == 2);
 
+        listNode *ln = listFirst(gap_log->history);
+        test_assert(ln != NULL);
+        uuidSet *us = (uuidSet*)listNodeValue(ln);
+        test_assert(us != NULL);
         
+        sds stored_uuid = sdsnewlen(us->uuid, us->uuid_len);
+        dictEntry *de = dictFind(gap_log->data, stored_uuid);
+        sdsfree(stored_uuid);
+        test_assert(de != NULL);
+        skiplist *sl = dictGetVal(de);
         gtidGaplogDataIterator iter;
         gtidGaplogDataInitIterator(&iter, sl, 1);
-
-        
         gno_t gno = gtidGaplogDataGetGno(&iter);
         test_assert(gno == 1);
         gtidGaplogKeys *k1 = gtidGaplogDataNext(&iter);
@@ -2126,7 +2081,7 @@ int gtidTest(int argc, char **argv, int accurate) {
 
         gtidGaplogDataInitIterator(&iter, sl, 3);
         gno = gtidGaplogDataGetGno(&iter);
-        test_assert(gno == 5); /* gno=1 */
+        test_assert(gno == 5);
         gtidGaplogKeys *k_mid = gtidGaplogDataNext(&iter);
         test_assert(k_mid != NULL);
         test_assert(sdslen(k_mid->keys[0]->key) == 7); /* "hashkey" */
@@ -2134,16 +2089,13 @@ int gtidTest(int argc, char **argv, int accurate) {
 
         gtidGaplogDataInitIterator(&iter, sl, 10);
         gno = gtidGaplogDataGetGno(&iter);
-        test_assert(gno == -1); /* not find note */
+        test_assert(gno == -1); /* not find node */
         gtidGaplogKeys *k_empty = gtidGaplogDataNext(&iter);
         test_assert(k_empty == NULL);
         gtidGaplogDeinitDataIterator(&iter);
 
-       
-        gap_log->size = 0;
-        dictEmpty(gap_log->data, NULL);
-        listEmpty(gap_log->history);
-        zfree(gap_log);
+        sdsfree(uuid);
+        gtidGaplogRelease(gap_log);
     }
 
     TEST("gtid - gapLog history iterator") {
@@ -2279,13 +2231,10 @@ int gtidTest(int argc, char **argv, int accurate) {
     }
 
     TEST("gtid - gapLog trim basic") {
-        
         gtidGaplog *gap_log = gtidGaplogNew();
+        sds uuid = sdsnew("uuid-A");
 
-        
-        skiplist *sl = skiplistCreate(&gtid_skip_type);
-
-        /* add key  gno=2 */
+        /* add key (gno=2) */
         {
             gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
             gtidGaplogKeysPrepareBuilder(&builder, 2);
@@ -2298,26 +2247,19 @@ int gtidTest(int argc, char **argv, int accurate) {
             gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
             gtidGaplogDeinitKeysBuilder(&builder);
 
-            skiplistInsert(sl, 2, keys, 1); 
+            int ret = gtidGaplogInsert(gap_log, uuid, 2, keys);
+            test_assert(ret == 1);
         }
-        test_assert(sl->length == 1);
 
-        sds uuid_key = sdsnew("uuid-A");
-        dictAdd(gap_log->data, uuid_key, sl);
-        gap_log->size = 1;
-
-        uuidSet *us = uuidSetNew("uuid-A", 6);
-        uuidSetAdd(us, 2, 2);
-        listAddNodeTail(gap_log->history, us);
+        test_assert(gtidGaplogSize(gap_log) == 1);
 
         int trimmed = gtidGaplogTrim(gap_log, 1);
         test_assert(trimmed == 1);
-        test_assert(gap_log->size == 0); 
-        test_assert(listLength(gap_log->history) == 0); 
+        test_assert(gtidGaplogSize(gap_log) == 0);
+        test_assert(listLength(gap_log->history) == 0);
 
-        dictEmpty(gap_log->data, NULL);
+        sdsfree(uuid);
         gtidGaplogRelease(gap_log);
-        zfree(gap_log);
     }
 
     TEST("gtid - readBacklogIterator init and deinit") {
