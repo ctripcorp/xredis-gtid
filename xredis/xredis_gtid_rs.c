@@ -97,7 +97,7 @@ void propagateArgsPrepareToFeed(propagateArgs *pargs) {
 #ifdef ENABLE_SWAP
             server.swap_draining_master != NULL ||
 #endif
-            !server.gtid_enabled ||
+            (!server.gtid_enabled && server.gtid_embedded_gno == 0) ||
             pargs->orig_cmd->proc == gtidCommand ||
             pargs->orig_cmd->proc == publishCommand ||
             (server.gtid_dbid_at_multi != -1 &&
@@ -106,8 +106,16 @@ void propagateArgsPrepareToFeed(propagateArgs *pargs) {
         argc = pargs->orig_argc;
         argv = pargs->orig_argv;
     } else {
-        gno = gtidSetCurrentUuidSetNext(server.gtid_executed,1);
-
+        /* Use caller-supplied identity when a GTID-wrapped command is being
+         * called; otherwise auto-allocate a new gno from server.uuid. */
+        if (server.gtid_embedded_gno >= GTID_GNO_INITIAL) {
+            gno = server.gtid_embedded_gno;
+            uuid = server.gtid_embedded_uuid;
+            uuid_len = server.gtid_embedded_uuid_len;
+            dbid = server.gtid_embedded_dbid;
+        } else {
+            gno = gtidSetCurrentUuidSetNext(server.gtid_executed,1);
+        }
         bufmaxlen = uuid_len+1+21/* GNO_REPR_MAX_LEN */;
         buf = zmalloc(bufmaxlen);
         buflen = uuidGnoEncode(buf, bufmaxlen, uuid, uuid_len, gno);
