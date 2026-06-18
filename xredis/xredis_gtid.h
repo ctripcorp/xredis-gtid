@@ -54,6 +54,7 @@ void serverGtidSetRemoveExecuted(gtidSet *delta_executed);
 const char *getMasterUuid(size_t *puuid_len);
 void setMasterUuid(const char *master_uuid, size_t master_uuid_len);
 void clearMasterUuid();
+void serverGtidEmbeddedClear(void);
 
 /* Repl stream */
 #define CONFIG_RUN_ID_SIZE 40
