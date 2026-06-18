@@ -35,7 +35,7 @@ INSTALL=cp -rf
 all: $(GTID_LIB)
 
 $(XREDIS_COMMANDS):
-	python ./utils/generate_cmdparse_commands.py
+	$(PYTHON) ./utils/generate_cmdparse_commands.py
 
 
 $(GTID_LIB): $(GTID_OBJ) $(XREDIS_COMMANDS)
