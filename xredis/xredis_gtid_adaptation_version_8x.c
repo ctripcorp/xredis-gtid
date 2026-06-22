@@ -30,6 +30,10 @@ int gitdCmdGetKeyType(struct redisCommand *cmd) {
     return OBJ_UNKNOWN;
 }
 
+char* gtidRedisCommandGetName(struct redisCommand* cmd) {
+    return cmd->fullname;
+}
+
 char* gtidGetTypeName(int key_type) {
     if (key_type == OBJ_UNKNOWN) {
         return "unknow";
@@ -329,4 +333,13 @@ long long gtidBacklogAppendToSds(long long offset, sds *dst, size_t size) {
     sdsIncrLen(*dst, total);
 
     return total;
+}
+
+/* test */
+void gtidInitTestEnv() {
+    server.repl_buffer_blocks = listCreate();
+    server.slaves = listCreate();
+}
+void gtidFeedReplicationBacklog(void* buffer, size_t len) {
+    feedReplicationBuffer(buffer, len);
 }

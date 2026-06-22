@@ -851,7 +851,7 @@ int readBacklogIteratorTest(int argc, char **argv, int accurate) {
         /* Set up backlog with a single SET command */
         if (server.repl_backlog == NULL) ctrip_createReplicationBacklog();
         sds cmd = sdsnew("*3\r\n$3\r\nset\r\n$3\r\nkey\r\n$5\r\nvalue\r\n");
-        feedReplicationBacklog(cmd, sdslen(cmd));
+        gtidFeedReplicationBacklog(cmd, sdslen(cmd));
         long long start_off = gtidGetBacklogOffset() ;
 
         readBacklogIterator it;

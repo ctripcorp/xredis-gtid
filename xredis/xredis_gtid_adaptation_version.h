@@ -8,6 +8,8 @@ dict* gtidDictCreate(dictType *type);
 /* command */
 struct redisCommand* gtidLookupCommandBySds(sds name);
 int gitdCmdGetKeyType(struct redisCommand *cmd);
+char* gtidRedisCommandGetName(struct redisCommand* cmd);
+
 /* obj  */
 char* gtidGetTypeName(int key_type);
 
@@ -56,5 +58,7 @@ char* gtidGetCmdName(struct redisCommand* cmd);
 struct redisCommand* gtidGetGtidCommand();
 struct redisCommand* gtidGetExecCommand();
 
-
+/* gtid test*/
+void gtidInitTestEnv();
+void gtidFeedReplicationBacklog(void* buffer, size_t len);
 #endif
