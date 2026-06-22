@@ -114,6 +114,13 @@ void serverGtidSetRemoveExecuted(gtidSet *delta_executed) {
     serverGtidSetCurrrentUuidSetUpdateNextGno();
 }
 
+void serverGtidEmbeddedClear(void) {
+    server.gtid_embedded_uuid = NULL;
+    server.gtid_embedded_uuid_len = 0;
+    server.gtid_embedded_gno = 0;
+    server.gtid_embedded_dbid = -1;
+}
+
 /**
  * @brief
  *      1. gtid A:1 {db} set k v
@@ -124,6 +131,7 @@ void gtidCommand(client *c) {
     sds gtid = c->argv[1]->ptr;
     long long gno = 0;
     size_t uuid_len = 0;
+    int propagate_numops_before = server.also_propagate.numops;
     char* uuid = uuidGnoDecode(gtid, sdslen(gtid), &gno, &uuid_len);
     if (uuid == NULL) {
         addReplyErrorFormat(c,"gtid format error:%s", gtid);
@@ -187,11 +195,49 @@ void gtidCommand(client *c) {
         rejectCommandFormat(c,"wrong number of arguments for '%s' command",
             c->cmd->fullname);
         goto end;
+    } else if (c->cmd->flags & CMD_READONLY) {
+        rejectCommandFormat(c,"readonly command cannot be embedded in gtid command");
+        goto end;
     }
 
+    /* Reject nondeterministic commands: slave re-executes and gets a different
+     * result, causing data divergence. */
+
+    for (int i = 0; i < c->cmd->num_tips; i++) {
+        if (!strcasecmp(c->cmd->tips[i], "nondeterministic_output")) {
+            rejectCommandFormat(c,
+                "'%s' command is not permitted to be embedded in gtid command: "
+                "nondeterministic output would cause master/slave divergence",
+                c->cmd->fullname);
+            goto end;
+        }
+    }
+
+    serverAssert(server.gtid_embedded_uuid == NULL);
+    serverAssert(server.gtid_embedded_uuid_len == 0);
+    serverAssert(server.gtid_embedded_gno == 0);
+    serverAssert(server.gtid_embedded_dbid == -1);
+    server.gtid_embedded_uuid = uuid;
+    server.gtid_embedded_uuid_len = uuid_len;
+    server.gtid_embedded_gno = gno;
+    server.gtid_embedded_dbid = id;
+
+    long long dirty_before = server.dirty;
     c->cmd->proc(c);
-    serverAssert(gtidSetAdd(server.gtid_executed, uuid, uuid_len, gno, gno));
-    server.gtid_executed_cmd_count++;
+
+    if (server.dirty != dirty_before) {
+        /* Only consume gno if there's a real effect */
+        serverAssert(gtidSetAdd(server.gtid_executed, uuid, uuid_len, gno, gno));
+        server.gtid_executed_cmd_count++;
+        /* set origin command and then rewrite it in united function.
+         * module commands propagate by themselves. */
+        if (!(c->cmd->flags & CMD_MODULE)) {
+            alsoPropagate(c->db->id, c->argv, c->argc, PROPAGATE_AOF|PROPAGATE_REPL);
+        }
+    }
+
+    if (server.also_propagate.numops == propagate_numops_before)
+        serverGtidEmbeddedClear();
 
 end:
     for(int i = 0; i < c->argc; i++) {
