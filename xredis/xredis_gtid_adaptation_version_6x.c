@@ -46,6 +46,9 @@ int gitdCmdGetKeyType(struct redisCommand *cmd) {
     return OBJ_UNKNOWN;
 }
 
+char* gtidRedisCommandGetName(struct redisCommand* cmd) {
+    return cmd->name;
+}
 char* gtidGetTypeName(int key_type) {
     robj o = {.type = key_type};
     return getObjectTypeName(&o);
@@ -310,3 +313,13 @@ struct redisCommand* gtidGetGtidCommand() {
 struct redisCommand* gtidGetExecCommand() {
     return server.execCommand;
 }     
+
+
+
+/* test */
+void gtidInitTestEnv() {
+    
+}
+void gtidFeedReplicationBacklog(void* buffer, size_t len) {
+    feedReplicationBacklog(buffer, len);
+}

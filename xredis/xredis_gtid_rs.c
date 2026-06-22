@@ -33,7 +33,19 @@
 
 void propagateArgsInit(propagateArgs *pargs, struct redisCommand *cmd,
         int dbid, robj **argv, int argc) {
-    if (cmd == NULL) cmd = gtidLookupCommandBySds(argv[0]->ptr);
+    if (cmd == NULL) {
+        if (server.current_client && server.current_client->cmd 
+            && strcasecmp(gtidRedisCommandGetName(server.current_client->cmd), argv[0]->ptr) == 0) {
+            cmd = server.current_client->cmd;
+        } else {
+            /* 
+                8.x
+                1. expire, delete key
+                2. exec 
+            */
+            cmd = gtidLookupCommandBySds(argv[0]->ptr);
+        }
+    }
     serverAssert(cmd != NULL);
     pargs->orig_cmd = cmd;
     pargs->orig_argv = argv;

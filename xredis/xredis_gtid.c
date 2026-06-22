@@ -706,7 +706,8 @@ int gtidTest(int argc, char **argv, int accurate) {
     server.proto_max_bulk_len = 512LL*1024*1024;
     server.maxmemory_policy = MAXMEMORY_FLAG_LFU;
     server.gtid_xsync_max_gap = 10000;
-    if (!server.logfile) server.logfile = zstrdup(CONFIG_DEFAULT_LOGFILE);
+    if (!server.logfile) server.logfile = zstrdup("");
+    gtidInitTestEnv();
 
     error += replTest(argc, argv, accurate);
     error += gapLogTest(argc, argv, accurate);
