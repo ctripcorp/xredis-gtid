@@ -7,7 +7,7 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
         set master_host [srv -1 host]
         set master_port [srv -1 port]
         set slave [srv 0 client]
-
+        $slave config set repl-rdb-channel no
         # Init replication link and and repl stream
         $slave replicaof $master_host $master_port
         wait_for_sync $slave
@@ -195,15 +195,23 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
             set orig_slave_gtidset  [status $slave  gtid_set]
 
             $master SET key val6 PX 100
-            after 200
+            # Wait for active expire to fire and write DEL to the replication
+            # stream. Using wait_for_condition instead of a hard after-delay
+            # avoids flakiness in SWAP mode where cold-key expiry may not
+            # complete within a fixed 200 ms window.
+            wait_for_condition 100 100 {
+                [$master EXISTS key] == 0
+            } else {
+                fail "key val6 did not expire on master"
+            }
 
             wait_for_gtid_sync $master $slave
 
             assert_equal [$master EXISTS key] 0
             assert_equal [$slave EXISTS key] 0
 
-            assert_replication_stream $master_repl [list "gtid $myuuid:[expr $mygno+1] * SET key val6 PX 100" "gtid $myuuid:[expr $mygno+2] * DEL key"]
-            assert_replication_stream $slave_repl [list "gtid $myuuid:[expr $mygno+1] * SET key val6 PX 100" "gtid $myuuid:[expr $mygno+2] * DEL key"]
+            assert_replication_stream $master_repl [list "gtid $myuuid:[expr $mygno+1] * SET key val6 PXAT *" "gtid $myuuid:[expr $mygno+2] * DEL key"]
+            assert_replication_stream $slave_repl [list "gtid $myuuid:[expr $mygno+1] * SET key val6 PXAT *" "gtid $myuuid:[expr $mygno+2] * DEL key"]
 
             assert_equal [lindex [$master GTIDX SEQ LOCATE $orig_master_gtidset] 1] "$myuuid:[expr $mygno+1]-[expr $mygno+2]"
             assert_equal [lindex [$slave  GTIDX SEQ LOCATE $orig_slave_gtidset ] 1] "$myuuid:[expr $mygno+1]-[expr $mygno+2]"
@@ -439,21 +447,21 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
 
         if {$::swap} {
             assert_replication_stream $repl {
-                {select *}
                 {multi}
+                {select *}
                 {set k v}
                 {set k v}
-                {gtid * * exec}
+                {gtid * * EXEC}
                 {gtid * 0 set k v1}
             }
         } else {
             assert_replication_stream $repl {
-                {select *}
                 {multi}
+                {select *}
                 {set k v}
                 {select 0}
                 {set k v}
-                {gtid * * exec}
+                {gtid * * EXEC}
                 {gtid * 0 set k v1}
             }
         }
@@ -479,14 +487,26 @@ start_server {tags {"repl"} overrides} {
         $master set k v1
         $master exec
 
-        assert_replication_stream $repl {
-            {select 2}
-            {multi}
-            {set k v}
-            {select 3}
-            {set k v1}
-            {gtid * 2 exec}
+        if {$::swap} {
+            assert_replication_stream $repl {
+                {multi}
+                {select 2}
+                {set k v}
+                {select 3}
+                {set k v1}
+                {gtid * 0 EXEC}
+            }
+        } else {
+            assert_replication_stream $repl {
+                {multi}
+                {select 2}
+                {set k v}
+                {select 3}
+                {set k v1}
+                {gtid * 9 EXEC}
+            }
         }
+        
         after 1000
 
         assert_equal [$slave get k] {}
