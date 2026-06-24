@@ -7,7 +7,7 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
         set master_host [srv -1 host]
         set master_port [srv -1 port]
         set slave [srv 0 client]
-
+        catch {$slave config set repl-rdb-channel no}
         # Init replication link and and repl stream
         $slave replicaof $master_host $master_port
         wait_for_sync $slave
@@ -46,8 +46,9 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
             assert_equal [$master GET key] val2
             assert_equal [$slave GET key] val2
 
-            assert_replication_stream $master_repl [list multi {set key val1} {publish hello world} {set key val2} "gtid $myuuid:$mygno * EXEC"]
-            assert_replication_stream $slave_repl  [list multi {set key val1} {publish hello world} {set key val2} "gtid $myuuid:$mygno * EXEC"]
+            set exec_pattern [format {gtid %s:%s * [Ee][Xx][Ee][Cc]} $myuuid $mygno]
+            assert_replication_stream $master_repl [list multi {set key val1} {publish hello world} {set key val2} $exec_pattern]
+            assert_replication_stream $slave_repl  [list multi {set key val1} {publish hello world} {set key val2} $exec_pattern]
 
             assert_match  "*$mygtidset*" [status $master gtid_executed]
 

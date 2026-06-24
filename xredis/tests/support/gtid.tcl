@@ -191,3 +191,12 @@ proc gaplog_get_key_type_debug {client key} {
     puts "key '$key' not found in any entry"
     return ""
 }
+
+proc dbsize_loadsafe {r varname} {
+    upvar 1 $varname dbsize
+    if {$::swap} {
+        return [expr {[catch {{*}$r dbsize} dbsize] == 0}]
+    }
+    set dbsize [{*}$r dbsize]
+    return 1
+}

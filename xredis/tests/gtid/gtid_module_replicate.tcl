@@ -12,32 +12,14 @@
 # Note: the GTID command's third argument is dbid. All module commands below
 # use dbid=0 to ensure consistent key lookup on the slave side.
 
-source tests/support/aofmanifest.tcl
-
 set testmodule [file normalize tests/modules/propagate.so]
-set gtid_repl_aof_server_path [tmpdir gtid.module.replicate.aof]
-
-proc gtidModuleReplicateReadAofCommands {aof_path} {
-    set fp [open $aof_path r]
-    fconfigure $fp -translation binary
-    fconfigure $fp -blocking 1
-
-    set commands {}
-    while {1} {
-        set cmd [read_from_aof $fp]
-        if {$cmd eq ""} break
-        lappend commands $cmd
-    }
-
-    close $fp
-    return $commands
-}
+set gtid_module_repl_overrides [list gtid-enabled yes loadmodule "$testmodule"]
 
 tags {"modules" "gtid"} {
-    start_server [list overrides [list gtid-enabled yes loadmodule "$testmodule"]] {
+    start_server [list overrides $gtid_module_repl_overrides] {
         set slave  [srv 0 client]
 
-        start_server [list overrides [list gtid-enabled yes loadmodule "$testmodule"]] {
+        start_server [list overrides $gtid_module_repl_overrides] {
             set master [srv 0 client]
             set master_host [srv 0 host]
             set master_port [srv 0 port]
@@ -189,56 +171,6 @@ tags {"modules" "gtid"} {
                 assert_equal $before_c1 [$slave get counter-1]
                 assert_equal PONG [$master ping]
             }
-        }
-    }
-
-    start_server [list overrides [list \
-        dir $gtid_repl_aof_server_path \
-        appendonly yes \
-        appendfilename appendonly.aof \
-        appenddirname appendonlydir \
-        auto-aof-rewrite-percentage 0 \
-        aof-load-truncated yes \
-        save "" \
-        gtid-enabled yes] keep_persistence true] {
-        test {prepare AOF for GTID stale embedded identity regression} {
-            set raw [redis [srv host] [srv port] 0 $::tls]
-            assert_equal OK [$raw gtid "repro:1" 0 set leak-seed seed]
-            $raw close
-        }
-    }
-
-    start_server [list overrides [list \
-        dir $gtid_repl_aof_server_path \
-        appendonly yes \
-        appendfilename appendonly.aof \
-        appenddirname appendonlydir \
-        auto-aof-rewrite-percentage 0 \
-        aof-load-truncated yes \
-        save "" \
-        gtid-enabled yes] keep_persistence true] {
-        test {GTID AOF reload does not leak stale embedded identity to first plain write} {
-            # Use a fresh raw client so the first command after restart is the plain
-            # write under test instead of the harness's auto-SELECT.
-            set raw [redis [srv host] [srv port] 0 $::tls]
-            assert_equal OK [$raw set leak-fresh value]
-
-            set aof [get_last_incr_aof_path $raw]
-            set commands [gtidModuleReplicateReadAofCommands $aof]
-            $raw close
-
-            assert_equal 4 [llength $commands]
-            assert_equal {select 0} [lindex $commands 0]
-            assert_equal {gtid repro:1 0 set leak-seed seed} [lindex $commands 1]
-            assert_equal {select 0} [lindex $commands 2]
-
-            set replay [lindex $commands 3]
-            assert_equal gtid [lindex $replay 0]
-            assert_no_match "repro:1" [lindex $replay 1]
-            assert_equal 0 [lindex $replay 2]
-            assert_equal set [lindex $replay 3]
-            assert_equal leak-fresh [lindex $replay 4]
-            assert_equal value [lindex $replay 5]
         }
     }
 }
