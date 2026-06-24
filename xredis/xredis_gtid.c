@@ -237,12 +237,24 @@ void gtidCommand(client *c) {
     /* Reject nondeterministic commands: slave re-executes and gets a different
      * result, causing data divergence. */
 
-    for (int i = 0; i < c->cmd->num_tips; i++) {
-        if (!strcasecmp(c->cmd->tips[i], "nondeterministic_output")) {
+    if (gtidCommandHasNondeterministicOutput(c->cmd)) {
+        rejectCommandFormat(c,
+            "'%s' command is not permitted to be embedded in gtid command: "
+            "nondeterministic output would cause master/slave divergence",
+            gtidGetCmdName(c->cmd));
+        goto end;
+    }
+
+    int n_rewrite = 0;
+    const redisCommandProc **rewrite_procs = gtidGetRewriteCmdProcs(&n_rewrite);
+    for (int i = 0; i < n_rewrite; i++) {
+        if (c->cmd->proc == rewrite_procs[i]) {
             rejectCommandFormat(c,
-                "'%s' command is not permitted to be embedded in gtid command: "
-                "nondeterministic output would cause master/slave divergence",
-                c->cmd->fullname);
+                "'%s' command rewrites its argv (e.g. %s), "
+                "which is not supported inside gtid command. "
+                "Use the canonical form (e.g. PEXPIREAT/SET PXAT/LPOP) directly.",
+                gtidGetCmdName(c->cmd),
+                gtidGetCmdName(c->cmd));
             goto end;
         }
     }
@@ -266,7 +278,8 @@ void gtidCommand(client *c) {
         /* set origin command and then rewrite it in united function.
          * module commands propagate by themselves. */
         if (!(c->cmd->flags & CMD_MODULE)) {
-            alsoPropagate(c->db->id, c->argv, c->argc, PROPAGATE_AOF|PROPAGATE_REPL);
+            gtidAlsoPropagate(c->cmd, c->db->id, c->argv, c->argc,
+                    PROPAGATE_AOF|PROPAGATE_REPL);
         }
     }
 

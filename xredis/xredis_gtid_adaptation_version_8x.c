@@ -20,6 +20,22 @@ char* gtidGetCmdName(struct redisCommand* cmd) {
     return cmd->fullname;
 }
 
+int gtidCommandHasNondeterministicOutput(struct redisCommand *cmd) {
+    if (cmd == NULL) return 0;
+    for (int i = 0; i < cmd->num_tips; i++) {
+        if (!strcasecmp(cmd->tips[i], "nondeterministic_output")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void gtidAlsoPropagate(struct redisCommand *cmd, int dbid, robj **argv,
+        int argc, int target) {
+    alsoPropagate(dbid, argv, argc, target);
+    UNUSED(cmd);
+}
+
 /* obj  */
 int gitdCmdGetKeyType(struct redisCommand *cmd) {
     if (cmd == NULL) return OBJ_UNKNOWN;
@@ -347,4 +363,23 @@ void gtidInitTestEnv() {
 }
 void gtidFeedReplicationBacklog(void* buffer, size_t len) {
     feedReplicationBuffer(buffer, len);
+}
+
+const redisCommandProc **gtidGetRewriteCmdProcs(int *count) {
+    static const redisCommandProc *procs[] = {
+        /* t_string.c: setex/psetex → SET PXAT, getset → SET */
+        setexCommand, psetexCommand, getsetCommand,
+        /* expire.c: expire/pexpire/expireat → PEXPIREAT */
+        expireCommand, pexpireCommand, expireatCommand,
+        /* t_hash.c: hexpire/hpexpire/hexpireat → HPEXPIREAT, hsetex → HSETEX KEEPTTL */
+        hexpireCommand, hpexpireCommand, hexpireatCommand, hsetexCommand,
+        /* t_list.c: blocking commands → unblocking commands */
+        blmoveCommand, brpoplpushCommand, blpopCommand, brpopCommand,
+        /* t_zset.c:blocking commands → unblocking commands */
+        bzpopminCommand, bzpopmaxCommand,
+        /* geo.c: geoadd → ZADD */
+        geoaddCommand,
+    };
+    *count = sizeof(procs) / sizeof(procs[0]);
+    return procs;
 }
