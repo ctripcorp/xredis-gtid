@@ -64,13 +64,11 @@ start_server {overrides {gtid-enabled yes}} {
             $R(0) set k v2
             $R(0) exec
             $R(0) set k v3
-            assert_replication_stream $repl {
-                {select *}
-                {multi}
-                {set k v2}
-                {gtid * * exec}
-                {gtid * * set k v3}
-            }
+            assert_replication_stream $repl [list \
+                {select *} \
+                {*}[gtid_multi_one_command_pattern set k v2] \
+                {gtid * * set k v3} \
+            ]
             $R(1) get k
         } {v3}
         test "GTID MULTI ERROR" {
@@ -80,13 +78,11 @@ start_server {overrides {gtid-enabled yes}} {
             $R(0) set k v5
             catch {$R(0) exec } error
             $R(0) set k v6
-            assert_replication_stream $repl {
-                {select *}
-                {multi}
-                {set k v5}
-                {gtid * * exec}
-                {gtid * * set k v6}
-            }
+            assert_replication_stream $repl [list \
+                {select *} \
+                {*}[gtid_multi_one_command_pattern set k v5] \
+                {gtid * * set k v6} \
+            ]
             $R(1) get k
         } {v6}
 
@@ -94,11 +90,11 @@ start_server {overrides {gtid-enabled yes}} {
             set repl [attach_to_replication_stream]
             $R(0) setex k 1 v7
             after 1000
-            assert_replication_stream $repl {
-                {select *}
-                {gtid * * SET k v7 PX 1000}
-                {gtid * * DEL k}
-            }
+            assert_replication_stream $repl [list \
+                {select *} \
+                [gtid_set_px_match * * k v7 1000] \
+                {gtid * * DEL k} \
+            ]
             $R(1) get k
         } {}
 
@@ -121,13 +117,12 @@ start_server {overrides {gtid-enabled yes}} {
 
             wait_for_ofs_sync $R(0) $R(1)
 
-            assert_replication_stream $repl {
-                {select *}
-                {multi}
-                {ltrim mylist 1 -2}
-                {hdel myhash f1 f2 f3}
-                {gtid * * exec}
-            }
+            assert_replication_stream $repl [concat \
+                [gtid_multi_select_patterns * * [list \
+                {ltrim mylist 1 -2} \
+                {hdel myhash f1 f2 f3} \
+                ]]\
+            ]
 
             assert_equal [$R(1) mget key1 key2] {val1 val2}
             assert_equal [$R(1) lrange mylist 0 -1] {b c 1 2}

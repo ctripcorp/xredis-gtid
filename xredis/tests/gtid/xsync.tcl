@@ -291,8 +291,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
         assert_equal [$slave get hello] world
         assert_repl_stream_aligned $master $slave
 
-        $slave replicaof 127.0.0.1 0
-        after 100
+        replicaof_disconnect $slave
 
         $master config set gtid-enabled no
         assert_equal [status $master gtid_repl_mode] psync
@@ -338,7 +337,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
         wait_for_ofs_sync $master $slave
         assert_equal [$slave get hello] world_1
 
-        $slave replicaof 127.0.0.1 0
+        replicaof_disconnect $slave
 
         $master set hello world_2
 
@@ -459,7 +458,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
         assert_repl_stream_aligned $master $slave
         assert_equal [$slave get hello] world_1
 
-        $slave replicaof 127.0.0.1 0
+        replicaof_disconnect $slave
 
         $master set hello world_2
 
@@ -554,7 +553,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
         wait_for_gtid_sync $master $slave
         assert_equal [$slave get hello] world_1
 
-        $slave replicaof 127.0.0.1 0
+        replicaof_disconnect $slave
 
         $master set hello world_2
 
@@ -824,7 +823,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
         assert_repl_stream_aligned $master $slave
         assert_equal [$slave get hello] world
 
-        $slave replicaof 127.0.0.1 0
+        replicaof_disconnect $slave
 
         $master set hello world_1
         assert_equal [$slave get hello] world
@@ -941,9 +940,7 @@ start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
 
         # master would shift replid
         # slave would psync ok and upate replid
-        $master replicaof 127.0.0.1 0
-        after 100
-        assert_equal [status $slave master_link_status] "down"
+        replicaof_disconnect $master 200
 
         $master replicaof no one
         $master set hello world

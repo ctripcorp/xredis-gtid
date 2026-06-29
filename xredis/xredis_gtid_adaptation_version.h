@@ -62,3 +62,9 @@ struct redisCommand* gtidGetExecCommand();
 void gtidInitTestEnv();
 void gtidFeedReplicationBacklog(void* buffer, size_t len);
 #endif
+
+/* 
+ * 返回会做 argv rewrite 的命令 proc 列表（各版本不同，如 8.x 有 geoadd、6.x 没有）。
+ * count 返回数组长度。调用方不能 free 返回的数组。
+ */
+const redisCommandProc **gtidGetRewriteCmdProcs(int *count);

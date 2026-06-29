@@ -202,8 +202,8 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
             assert_equal [$master EXISTS key] 0
             assert_equal [$slave EXISTS key] 0
 
-            assert_replication_stream $master_repl [list "gtid $myuuid:[expr $mygno+1] * SET key val6 PX 100" "gtid $myuuid:[expr $mygno+2] * DEL key"]
-            assert_replication_stream $slave_repl [list "gtid $myuuid:[expr $mygno+1] * SET key val6 PX 100" "gtid $myuuid:[expr $mygno+2] * DEL key"]
+            assert_replication_stream $master_repl [list [gtid_set_px_match $myuuid:[expr $mygno+1] 0 key val6 100] "gtid $myuuid:[expr $mygno+2] * DEL key"]
+            assert_replication_stream $slave_repl [list [gtid_set_px_match $myuuid:[expr $mygno+1] 0 key val6 100] "gtid $myuuid:[expr $mygno+2] * DEL key"]
 
             assert_equal [lindex [$master GTIDX SEQ LOCATE $orig_master_gtidset] 1] "$myuuid:[expr $mygno+1]-[expr $mygno+2]"
             assert_equal [lindex [$slave  GTIDX SEQ LOCATE $orig_slave_gtidset ] 1] "$myuuid:[expr $mygno+1]-[expr $mygno+2]"
@@ -438,24 +438,19 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
         r set k v1
 
         if {$::swap} {
-            assert_replication_stream $repl {
-                {select *}
-                {multi}
-                {set k v}
-                {set k v}
-                {gtid * * exec}
-                {gtid * 0 set k v1}
-            }
+            assert_replication_stream $repl [concat \
+                [gtid_multi_select_patterns 0 * [list \
+                    {set k v} {set k v} \
+                ]] \
+                [list {gtid * 0 set k v1}] \
+            ]
         } else {
-            assert_replication_stream $repl {
-                {select *}
-                {multi}
-                {set k v}
-                {select 0}
-                {set k v}
-                {gtid * * exec}
-                {gtid * 0 set k v1}
-            }
+            assert_replication_stream $repl [concat \
+                [gtid_multi_select_patterns 9 * [list \
+                    {set k v} {select 0} {set k v} \
+                ]] \
+                [list {gtid * 0 set k v1}] \
+            ]
         }
     }
 }
@@ -478,15 +473,30 @@ start_server {tags {"repl"} overrides} {
         $master select 3
         $master set k v1
         $master exec
+        # 6.x
+        #  assert_replication_stream $repl {
+        #     {select 2}
+        #     {multi}
+        #     {set k v}
+        #     {select 3}
+        #     {set k v1}
+        #     {gtid * 2 exec}
+        # }
 
-        assert_replication_stream $repl {
-            {select 2}
-            {multi}
-            {set k v}
-            {select 3}
-            {set k v1}
-            {gtid * 2 exec}
-        }
+        # 8.x
+        # assert_replication_stream $repl {
+        #     {multi}
+        #     {select 2}
+        #     {set k v}
+        #     {select 3}
+        #     {set k v1}
+        #     {gtid * 9 exec}
+        # }
+        assert_replication_stream $repl [concat \
+            [gtid_multi_select_patterns 2 9 [list \
+                {set k v} {select 3} {set k v1} \
+            ]] \
+        ]
         after 1000
 
         assert_equal [$slave get k] {}
@@ -495,5 +505,118 @@ start_server {tags {"repl"} overrides} {
         $slave select 3
         assert_equal [$slave get k] v1
 
+    }
+}
+
+# Verify that GTID command rejects commands that would rewrite their argv
+# (e.g. expire -> PEXPIREAT, setex -> SET PXAT). Rewriting argv inside the
+# gtid command body is unsafe because the rewritten argv is dropped on
+# gtidCommand exit (which restores orig_argv), causing the unrewritten
+# original command to be written to AOF/replication and breaking
+# master-replica consistency. The list of commands subject to argv rewrite
+# varies by Redis version and is supplied by gtid_rewrite_cmd_list.
+start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
+    test {GTID should reject commands that rewrite argv} {
+        set rewrite_cmds [gtid_rewrite_cmd_list]
+        set gno 1
+        # Pre-create every key the command under test may need so the
+        # foreach body only has to build arguments and assert the rejection.
+        r set getset_key v
+        r lpush src_key a
+        r lpush dst_key b
+        r lpush list_key a
+        r zadd zset_key 1 a
+        r hset hash_key f1 v1
+        # geoadd does not need a pre-existing key, but the value is ignored
+        # anyway because the command is rejected before any DB work happens.
+        set now_seconds [clock seconds]
+        set now_ms [clock milliseconds]
+
+        foreach cmd $rewrite_cmds {
+            # Each command needs its own argument list.
+            switch -- $cmd {
+                "expire"     { set args [list $cmd k1 1000] }
+                "pexpire"    { set args [list $cmd k1 1000] }
+                "expireat"   { set args [list $cmd k1 [expr $now_seconds + 100]] }
+                "setex"      { set args [list $cmd k1 10 v] }
+                "psetex"     { set args [list $cmd k1 10000 v] }
+                "getset"     { set args [list $cmd getset_key new] }
+                "hexpire"    { set args [list $cmd hash_key 100 f1] }
+                "hpexpire"   { set args [list $cmd hash_key 100 f1] }
+                "hexpireat"  { set args [list $cmd hash_key [expr $now_ms + 100000] f1] }
+                "hsetex"     { set args [list $cmd hash_key 100 f2 v2] }
+                "blmove"     { set args [list $cmd src_key dst_key LEFT RIGHT 1] }
+                "brpoplpush" { set args [list $cmd src_key dst_key 1] }
+                "blpop"      { set args [list $cmd list_key 1] }
+                "brpop"      { set args [list $cmd list_key 1] }
+                "bzpopmin"   { set args [list $cmd zset_key 1] }
+                "bzpopmax"   { set args [list $cmd zset_key 1] }
+                "geoadd"     { set args [list $cmd geo_key 13.36 38.11 palermo 15.08 37.50 catania] }
+                default      { set args [list $cmd] }
+            }
+            set err_msg [catch {r gtid A:1 0 {*}$args} result]
+            assert_match {*ERR*} $result
+            incr gno
+        }
+        # PEXPIREAT does NOT rewrite → should be accepted
+        r set k_accept v
+        assert_equal [r gtid A:$gno 0 PEXPIREAT k_accept 200000000000] {1}
+    }
+}
+
+
+# Verify that GTID command rejects commands that would rewrite their argv
+# (e.g. expire -> PEXPIREAT, setex -> SET PXAT). Rewriting argv inside the
+# gtid command body is unsafe because the rewritten argv is dropped on
+# gtidCommand exit (which restores orig_argv), causing the unrewritten
+# original command to be written to AOF/replication and breaking
+# master-replica consistency. The list of commands subject to argv rewrite
+# varies by Redis version and is supplied by gtid_rewrite_cmd_list.
+start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
+    test {GTID should reject commands that rewrite argv} {
+        set rewrite_cmds [gtid_rewrite_cmd_list]
+        set gno 1
+        # Pre-create every key the command under test may need so the
+        # foreach body only has to build arguments and assert the rejection.
+        r set getset_key v
+        r lpush src_key a
+        r lpush dst_key b
+        r lpush list_key a
+        r zadd zset_key 1 a
+        r hset hash_key f1 v1
+        # geoadd does not need a pre-existing key, but the value is ignored
+        # anyway because the command is rejected before any DB work happens.
+        set now_seconds [clock seconds]
+        set now_ms [clock milliseconds]
+
+        foreach cmd $rewrite_cmds {
+            # Each command needs its own argument list.
+            switch -- $cmd {
+                "expire"     { set args [list $cmd k1 1000] }
+                "pexpire"    { set args [list $cmd k1 1000] }
+                "expireat"   { set args [list $cmd k1 [expr $now_seconds + 100]] }
+                "setex"      { set args [list $cmd k1 10 v] }
+                "psetex"     { set args [list $cmd k1 10000 v] }
+                "getset"     { set args [list $cmd getset_key new] }
+                "hexpire"    { set args [list $cmd hash_key 100 f1] }
+                "hpexpire"   { set args [list $cmd hash_key 100 f1] }
+                "hexpireat"  { set args [list $cmd hash_key [expr $now_ms + 100000] f1] }
+                "hsetex"     { set args [list $cmd hash_key 100 f2 v2] }
+                "blmove"     { set args [list $cmd src_key dst_key LEFT RIGHT 1] }
+                "brpoplpush" { set args [list $cmd src_key dst_key 1] }
+                "blpop"      { set args [list $cmd list_key 1] }
+                "brpop"      { set args [list $cmd list_key 1] }
+                "bzpopmin"   { set args [list $cmd zset_key 1] }
+                "bzpopmax"   { set args [list $cmd zset_key 1] }
+                "geoadd"     { set args [list $cmd geo_key 13.36 38.11 palermo 15.08 37.50 catania] }
+                default      { set args [list $cmd] }
+            }
+            set err_msg [catch {r gtid A:1 0 {*}$args} result]
+            assert_match {*ERR*} $result
+            incr gno
+        }
+        # PEXPIREAT does NOT rewrite → should be accepted
+        r set k_accept v
+        assert_equal [r gtid A:$gno 0 PEXPIREAT k_accept 200000000000] {1}
     }
 }

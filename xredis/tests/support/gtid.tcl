@@ -1,3 +1,4 @@
+source "tests/support/gtid_version.tcl"
 proc get_gtid { r } {
     set result [dict create]
     if {[regexp "\r\ngtid_set:(.*?)\r\n" [{*}$r info gtid] _ value]} {

@@ -208,6 +208,20 @@ void gtidCommand(client *c) {
         goto end;
     }
 
+    int n_rewrite = 0;
+    const redisCommandProc **rewrite_procs = gtidGetRewriteCmdProcs(&n_rewrite);
+    for (int i = 0; i < n_rewrite; i++) {
+        if (c->cmd->proc == rewrite_procs[i]) {
+            rejectCommandFormat(c,
+                "'%s' command rewrites its argv (e.g. %s), "
+                "which is not supported inside gtid command. "
+                "Use the canonical form (e.g. PEXPIREAT/SET PXAT/LPOP) directly.",
+                gtidGetCmdName(c->cmd),
+                gtidGetCmdName(c->cmd));
+            goto end;
+        }
+    }
+
     c->cmd->proc(c);
     serverAssert(gtidSetAdd(server.gtid_executed, uuid, uuid_len, gno, gno));
     server.gtid_executed_cmd_count++;

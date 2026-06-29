@@ -343,3 +343,22 @@ void gtidInitTestEnv() {
 void gtidFeedReplicationBacklog(void* buffer, size_t len) {
     feedReplicationBuffer(buffer, len);
 }
+
+const redisCommandProc **gtidGetRewriteCmdProcs(int *count) {
+    static const redisCommandProc *procs[] = {
+        /* t_string.c: setex/psetex → SET PXAT, getset → SET */
+        setexCommand, psetexCommand, getsetCommand,
+        /* expire.c: expire/pexpire/expireat → PEXPIREAT */
+        expireCommand, pexpireCommand, expireatCommand,
+        /* t_hash.c: hexpire/hpexpire/hexpireat → HPEXPIREAT, hsetex → HSETEX KEEPTTL */
+        hexpireCommand, hpexpireCommand, hexpireatCommand, hsetexCommand,
+        /* t_list.c: blocking commands → unblocking commands */
+        blmoveCommand, brpoplpushCommand, blpopCommand, brpopCommand,
+        /* t_zset.c:blocking commands → unblocking commands */
+        bzpopminCommand, bzpopmaxCommand,
+        /* geo.c: geoadd → ZADD */
+        geoaddCommand,
+    };
+    *count = sizeof(procs) / sizeof(procs[0]);
+    return procs;
+}
