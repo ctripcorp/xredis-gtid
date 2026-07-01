@@ -2,6 +2,9 @@
 #include "xredis_gtid_adaptation_version.h"
 #include "server.h"
 
+uint64_t dictSdsCaseHash(const void *key);
+int dictSdsKeyCaseCompare(void *privdata, const void *key1, const void *key2);
+
 /* --- hset / hmset：one key + subkeys（field）, step 2, from argv[2] start  --- */
 static void cmdParseHset(int dbid, struct redisCommand *cmd, robj **argv, int argc, void *ctx, cmdParseOnKeyFn on_key) {
     int subkeys_count = (argc - 2) / 2;
@@ -80,14 +83,13 @@ static void cmdParseGeoDist(int dbid, struct redisCommand *cmd, robj **argv, int
 #include "xredis_commands.def"
 
 dictType cmd_parse_command_dict_type = {
-    dictSdsHash,
+    dictSdsCaseHash,
     NULL,
     NULL,
-    dictSdsKeyCompare,
+    dictSdsKeyCaseCompare,
     dictSdsDestructor,
     NULL,
 };
-
 dict* createCmdParseCommandDict() {
     dict* cmd_parse_command_dict = gtidDictCreate(&cmd_parse_command_dict_type);
     for (int i = 0; cmd_parse_commands[i].name != NULL; i++) {

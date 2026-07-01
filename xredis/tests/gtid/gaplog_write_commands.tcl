@@ -199,7 +199,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             after 100
 
             # ZADD (1)
-            $S zadd s_zset_key1 1 a 2 b 3 c 4 d 5 e
+            $S Zadd s_zset_key1 1 a 2 b 3 c 4 d 5 e
             # ZINCRBY (1)
             $S zincrby s_zset_key1 2.5 a
             # ZREM (1)
@@ -215,7 +215,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             $S zpopmin s_zset_key1
             $S zpopmax s_zset_key1
             # ZADD (1) + ZUNIONSTORE (1) + ZINTERSTORE (1) + ZDIFFSTORE (1)
-            $S zadd s_zset_key3 1 x 2 y 3 z
+            $S ZADD s_zset_key3 1 x 2 y 3 z
             $S zunionstore s_zset_union 2 s_zset_key1 s_zset_key3
             $S zinterstore s_zset_inter 2 s_zset_key1 s_zset_key3
             $S zdiffstore s_zset_diff 2 s_zset_key1 s_zset_key3
@@ -247,6 +247,8 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
         }
     }
 }
+
+
 
 start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled yes gtid-xsync-max-gap 10000}} {
     start_server {overrides {gtid-enabled yes gtid-gaplog-enabled yes gtid-xsync-max-gap 10000}} {
