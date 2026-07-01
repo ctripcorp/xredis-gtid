@@ -104,12 +104,12 @@ void cmdParseKeys(int dbid, struct redisCommand *cmd, robj **argv, int argc, voi
     }
     if (argc < 1) return;
     cmdParseCommandDef* parsecmd = dictFetchValue(cmd_parse_command_dict,argv[0]->ptr);
+    if (cmd == NULL) cmd = gtidLookupCommandBySds(argv[0]->ptr);
+    serverAssert(cmd != NULL);
     if (parsecmd != NULL) {
         parsecmd->parse(dbid, cmd, argv, argc, ctx, on_key);
         return;
     }
-    if (cmd == NULL) cmd = gtidLookupCommandBySds(argv[0]->ptr);
-    serverAssert(cmd != NULL);
     getKeysResult keys = GETKEYS_RESULT_INIT;
     int numkeys = getKeysFromCommand(cmd, argv, argc, &keys);
     for (int i = 0; i < numkeys; i++) {
