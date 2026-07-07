@@ -3,8 +3,6 @@
 #include "server.h"
 
 uint64_t dictSdsCaseHash(const void *key);
-int dictSdsKeyCaseCompare(void *privdata, const void *key1, const void *key2);
-
 /* --- hset / hmset：one key + subkeys（field）, step 2, from argv[2] start  --- */
 static void cmdParseHset(int dbid, struct redisCommand *cmd, robj **argv, int argc, void *ctx, cmdParseOnKeyFn on_key) {
     int subkeys_count = (argc - 2) / 2;
@@ -86,7 +84,7 @@ dictType cmd_parse_command_dict_type = {
     dictSdsCaseHash,
     NULL,
     NULL,
-    dictSdsKeyCaseCompare,
+    gtidDictSdsKeyCaseCompare,
     dictSdsDestructor,
     NULL,
 };

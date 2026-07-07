@@ -151,3 +151,42 @@ proc replicaof_xcontinue {S Mh Mp} {
 }
 
 proc gaploglen {c} { return [$c GTIDX GAPLOG LEN] }
+proc gaplog_get_key_type {client key} {
+    set gaplog_len [$client GTIDX GAPLOG LEN]
+    if {$gaplog_len == 0} { return "" }
+    set list_result [$client GTIDX GAPLOG LIST 0 $gaplog_len]
+    foreach entry $list_result {
+        set keys [lindex $entry 2]
+        foreach key_entry $keys {
+            set kname [lindex $key_entry 1]
+            set ktype [lindex $key_entry 2]
+            if {$kname == $key} {
+                return $ktype
+            }
+        }
+    }
+    return ""
+}
+proc gaplog_get_key_type_debug {client key} {
+    set gaplog_len [$client GTIDX GAPLOG LEN]
+    if {$gaplog_len == 0} { puts "gaplog empty"; return "" }
+    set list_result [$client GTIDX GAPLOG LIST 0 $gaplog_len]
+    puts "gaplog entries: $gaplog_len"
+    set idx 0
+    foreach entry $list_result {
+        set keys [lindex $entry 2]
+        puts "entry $idx: [lindex $entry 0] gno=[lindex $entry 1] nkeys=[llength $keys]"
+        foreach key_entry $keys {
+            set kname [lindex $key_entry 1]
+            set ktype [lindex $key_entry 2]
+            puts "  key: '$kname' type: '$ktype'"
+            if {$kname == $key} {
+                puts "  -> MATCHED"
+                return $ktype
+            }
+        }
+        incr idx
+    }
+    puts "key '$key' not found in any entry"
+    return ""
+}

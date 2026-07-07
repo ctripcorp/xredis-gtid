@@ -4,6 +4,7 @@
 
 /* dict */
 dict* gtidDictCreate(dictType *type);
+int gtidDictSdsKeyCaseCompare(void *privdata, const void *key1, const void *key2);
 
 /* command */
 struct redisCommand* gtidLookupCommandBySds(sds name);
