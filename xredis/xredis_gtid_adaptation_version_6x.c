@@ -43,6 +43,9 @@ int gitdCmdGetKeyType(struct redisCommand *cmd) {
     if (cmd->flags & CMD_CATEGORY_SET) return OBJ_SET;
     if (cmd->flags & CMD_CATEGORY_SORTEDSET) return OBJ_ZSET;
     if (cmd->flags & CMD_CATEGORY_BITMAP) return OBJ_STRING;
+    if (cmd->flags & CMD_CATEGORY_HYPERLOGLOG) return OBJ_STRING;
+    if (cmd->flags & CMD_CATEGORY_GEO) return OBJ_ZSET;
+    if (cmd->flags & CMD_CATEGORY_STREAM) return OBJ_STREAM;
     return OBJ_UNKNOWN;
 }
 
@@ -93,6 +96,10 @@ void gtidMockClientMoveClientArgv(client *c) {
 
 dict* gtidDictCreate(dictType *type) {
     return dictCreate(type, NULL);
+}
+
+int gtidDictSdsKeyCaseCompare(void *privdata, const void *key1, const void *key2) {
+    return dictSdsKeyCaseCompare(privdata, key1, key2);
 }
 
 int gtidGetKeysResultKeyIndex(getKeysResult* result, int index) {

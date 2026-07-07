@@ -63,6 +63,14 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             assert_match "*s_str_key6*" $result
             assert_match "*s_counter*" $result
             assert_match "*s_getset_key*" $result
+            assert_equal [gaplog_get_key_type $S s_str_key1] "string"
+            assert_equal [gaplog_get_key_type $S s_str_key2] "string"
+            assert_equal [gaplog_get_key_type $S s_str_key3] "string"
+            assert_equal [gaplog_get_key_type $S s_str_key4] "string"
+            assert_equal [gaplog_get_key_type $S s_str_key5] "string"
+            assert_equal [gaplog_get_key_type $S s_str_key6] "string"
+            assert_equal [gaplog_get_key_type $S s_counter] "string"
+            assert_equal [gaplog_get_key_type $S s_getset_key] "string"
         }
     }
 }
@@ -121,7 +129,8 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             assert_equal $gaplog_len 12 "Expected exactly 12 gaplog entries"
 
             set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
-            assert_match "*s_list_key1*" $result
+            assert_equal [gaplog_get_key_type $S s_list_key1] "list"
+            assert_equal [gaplog_get_key_type $S s_list_key2] "list"
         }
     }
 }
@@ -173,11 +182,14 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 7 "Expected exactly 7 gaplog entries"
-
             set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
             assert_match "*s_set_key1*" $result
             assert_match "*a*" $result
             assert_match "*b*" $result
+            assert_equal [gaplog_get_key_type $S s_set_key1] "set"
+            assert_equal [gaplog_get_key_type $S s_set_key2] "set"
+            assert_equal [gaplog_get_key_type $S s_set_union] "set"
+            assert_equal [gaplog_get_key_type $S s_set_diff] "set"
         }
     }
 }
@@ -237,18 +249,18 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 11 "Expected exactly 11 gaplog entries"
-
             set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
             assert_match "*s_zset_key1*" $result
             assert_match "*s_zset_key2*" $result
             assert_match "*s_zset_union*" $result
             assert_match "*a*" $result
             assert_match "*b*" $result
+            assert_equal [gaplog_get_key_type $S s_zset_key1] "zset"
+            assert_equal [gaplog_get_key_type $S s_zset_key2] "zset"
+            assert_equal [gaplog_get_key_type $S s_zset_union] "zset"
         }
     }
 }
-
-
 
 start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled yes gtid-xsync-max-gap 10000}} {
     start_server {overrides {gtid-enabled yes gtid-gaplog-enabled yes gtid-xsync-max-gap 10000}} {
@@ -293,7 +305,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             assert_equal $gaplog_len 5 "Expected exactly 5 gaplog entries"
 
             set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
-            assert_match "*s_hash_key1*" $result
+            assert_equal [gaplog_get_key_type $S s_hash_key1] "hash"
             assert_match "*field1*" $result
             assert_match "*field2*" $result
             assert_match "*counter*" $result
@@ -343,7 +355,9 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             assert_equal $gaplog_len 6 "Expected exactly 6 gaplog entries"
 
             set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
-            assert_match "*s_bitmap_key*" $result
+            assert_equal [gaplog_get_key_type $S s_bitmap_key] "string"
+            assert_equal [gaplog_get_key_type $S s_bitmap_key2] "string"
+            assert_equal [gaplog_get_key_type $S s_bit_result] "string"
         }
     }
 }
@@ -408,7 +422,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             assert_match "*s_del_key*" $result
             assert_match "*s_rename_src*" $result
             assert_match "*s_copy_src*" $result
-            assert_match "*s_expire_key*" $result
+            assert_equal [gaplog_get_key_type $S s_del_key] "string"
         }
     }
 }
@@ -452,7 +466,8 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 
             set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
             assert_match "*s_hll_key1*" $result
-            assert_match "*s_hll_result*" $result
+            assert_equal [gaplog_get_key_type $S s_hll_key1] "string"
+            assert_equal [gaplog_get_key_type $S s_hll_result] "string"
         }
     }
 }
@@ -497,7 +512,8 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 
             set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
             assert_match "*s_geo_key*" $result
-            assert_match "*s_geo_result*" $result
+            assert_equal [gaplog_get_key_type $S s_geo_key] "zset"
+            assert_equal [gaplog_get_key_type $S s_geo_result] "zset"
         }
     }
 }
@@ -545,7 +561,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             assert_equal $gaplog_len 5 "Expected exactly 5 gaplog entries"
 
             set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
-            assert_match "*s_stream_key*" $result
+            assert_equal [gaplog_get_key_type $S s_stream_key] "stream"
         }
     }
 }
@@ -588,9 +604,11 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             assert_equal $gaplog_len 2 "Expected exactly 2 gaplog entries"
 
             set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
-            assert_match "*s_mkey1*" $result
-            assert_match "*s_mkey2*" $result
-            assert_match "*s_mkey3*" $result
+            assert_equal [gaplog_get_key_type $S s_mkey1] "string"
+            assert_equal [gaplog_get_key_type $S s_mkey2] "string"
+            assert_equal [gaplog_get_key_type $S s_mkey3] "string"
+            assert_equal [gaplog_get_key_type $S s_mkey4] "string"
+            assert_equal [gaplog_get_key_type $S s_mkey5] "string"
         }
     }
 }
@@ -686,6 +704,9 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             replicaof_xcontinue $S $Mh $Mp
             assert {[gaploglen $S] >= 1 && [gaploglen $S] <= 2}
             assert_equal [$S get nx1] v1; assert_equal [$S exists nx4] 0
+            assert_equal [gaplog_get_key_type $S nx1] "string"
+            assert_equal [gaplog_get_key_type $S nx2] "string"
+            assert_equal [gaplog_get_key_type $S nx3] "string"
         }
     }
 }
@@ -704,6 +725,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
                 return "OK"
             }
             $S EVAL $lua 5 k1 k2 k3 ew k5 aa bb cc dd ee
+            assert_equal [gaplog_get_key_type $S ew] ""
             replicaof_xcontinue $S $Mh $Mp
             assert {[gaploglen $S] >= 1}
             assert_equal [$S get k1] aa; assert_equal [$S get k5] ee

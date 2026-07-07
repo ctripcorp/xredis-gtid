@@ -8,6 +8,9 @@
 dict* gtidDictCreate(dictType *type) {
     return dictCreate(type);
 }
+int gtidDictSdsKeyCaseCompare(void *privdata, const void *key1, const void *key2) {
+    return dictSdsKeyCaseCompare((dictCmpCache *)privdata, key1, key2);
+}
 
 struct redisCommand* gtidLookupCommandBySds(sds name) {
     return lookupCommandBySds(name);
@@ -26,7 +29,9 @@ int gitdCmdGetKeyType(struct redisCommand *cmd) {
     if (cmd->group == COMMAND_GROUP_SET) return OBJ_SET;
     if (cmd->group == COMMAND_GROUP_SORTED_SET) return OBJ_ZSET;
     if (cmd->group == COMMAND_GROUP_BITMAP) return OBJ_STRING;
-
+    if (cmd->group == COMMAND_GROUP_HYPERLOGLOG) return OBJ_STRING;
+    if (cmd->group == COMMAND_GROUP_GEO) return OBJ_ZSET;
+    if (cmd->group == COMMAND_GROUP_STREAM) return OBJ_STREAM;
     return OBJ_UNKNOWN;
 }
 
