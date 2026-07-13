@@ -47,6 +47,8 @@ sds gtidSetDump(gtidSet *gtid_set);
 sds gtidSetQuoteIfEmpty(sds gtid_repr);
 gtidSet *serverGtidSetGet(char *log_prefix);
 int serverGtidSetContains(char *uuid, size_t uuid_len, gno_t gno);
+gno_t serverGtidUuidNextGno(const char *uuid, size_t uuid_len);
+int serverGtidEmbeddedGnoIsExecuted(void);
 void serverGtidSetResetExecuted(gtidSet *gtid_executed);
 void serverGtidSetResetLost(gtidSet *gtid_lost);
 void serverGtidSetAddLost(gtidSet *delta_lost);
