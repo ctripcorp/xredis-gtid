@@ -531,41 +531,6 @@ start_server {tags {"repl"} overrides} {
 
 
 
-proc gtid_rewrite_cmd_list {} {
-    return {
-        append
-        blmove
-        blmpop
-        blpop
-        brpop
-        brpoplpush
-        bzmpop
-        bzpopmax
-        bzpopmin
-        expire
-        expireat
-        getdel
-        getex
-        getset
-        hexpire
-        hgetdel
-        hgetex
-        hincrby
-        hincrbyfloat
-        hpexpire
-        hsetex
-        incrbyfloat
-        incr
-        decr
-        pexpire
-        psetex
-        setex
-        setrange
-        spop
-        zmpop
-    }
-}
-
 # Verify that GTID command rejects commands that would rewrite their argv
 # (e.g. expire -> PEXPIREAT, setex -> SET PX, incrbyfloat -> SET). Rewriting
 # argv inside the gtid command body is unsafe: the rewritten argv is dropped
@@ -608,6 +573,7 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
                 "blmpop"        { set args [list $cmd 0 1 list_key LEFT] }
                 "bzpopmin"      { set args [list $cmd zset_key 1] }
                 "bzpopmax"      { set args [list $cmd zset_key 1] }
+                "geoadd"        { set args [list $cmd geo_key 13.36 38.11 palermo] }
                 "bzmpop"        { set args [list $cmd 0 1 hash_key MIN] }
                 "zmpop"         { set args [list $cmd hash_key 2 MIN] }
                 "spop"          { set args [list $cmd spop_key] }
@@ -617,5 +583,48 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
             assert_match {*ERR*} $result
             incr gno
         }
+    }
+}
+
+start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
+    test "GTID rejects commands that rewrite argv" {
+        gtid_seed_rewrite_cmd_keys r
+        set before_gno [status r gtid_executed_gno_count]
+        set before_gtid [status r gtid_set]
+
+        set gno 1
+        foreach cmd [gtid_rewrite_cmd_list] {
+            set args [gtid_rewrite_cmd_build_args $cmd]
+            catch {r gtid "rwtest:$gno" 0 {*}$args} err
+            assert_match "*nondeterminism in gtid command*" $err
+            incr gno
+        }
+
+        assert_equal $before_gno [status r gtid_executed_gno_count]
+        assert_equal $before_gtid [status r gtid_set]
+    }
+
+    test "GTID accepts canonical PEXPIREAT (no argv rewrite)" {
+        r set k_accept v
+        set abs_ms 2000000000000
+        assert_equal [r gtid canon:1 0 PEXPIREAT k_accept $abs_ms] 1
+        assert_match "*canon:1*" [status r gtid_set]
+    }
+
+    test "GTID accepts canonical HPEXPIREAT on Redis 8+ (no argv rewrite)" {
+        # Avoid bare `return` inside test{} — Redis 6 test.tcl's catch treats
+        # TCL_RETURN as an unexpected exception.
+        if {[gtid_redis_major_version r] >= 8} {
+            r hset hash_canon f1 v1
+            set abs_ms 2000000000000
+            assert_equal [r gtid canon:2 0 HPEXPIREAT hash_canon $abs_ms FIELDS 1 f1] 1
+            assert_match "*canon:1-2*" [status r gtid_set]
+        }
+    }
+
+    test "GTID rewrite rejection leaves keyspace unchanged (geoadd)" {
+        catch {r gtid rw:1 0 geoadd geo_key 13.36 38.11 x} err
+        assert_match "*nondeterminism in gtid command*" $err
+        assert_equal 0 [r zcard geo_key]
     }
 }

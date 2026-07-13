@@ -92,12 +92,14 @@ void propagateArgsPrepareToFeed(propagateArgs *pargs) {
         uuid = uuidGnoDecode(gtid_repr,sdslen(gtid_repr),&gno,&uuid_len);
     }
 
+    int embedded_gno_executed = serverGtidEmbeddedGnoIsExecuted();
+
     /* Rewrite args to gtid... if needed */
     if (server.masterhost != NULL ||
 #ifdef ENABLE_SWAP
             server.swap_draining_master != NULL ||
 #endif
-            (!server.gtid_enabled && server.gtid_embedded_gno == 0) ||
+            (!server.gtid_enabled && !embedded_gno_executed) ||
             pargs->orig_cmd->proc == gtidCommand ||
             pargs->orig_cmd->proc == publishCommand ||
             (server.gtid_dbid_at_multi != -1 &&
@@ -108,7 +110,7 @@ void propagateArgsPrepareToFeed(propagateArgs *pargs) {
     } else {
         /* Use caller-supplied identity when a GTID-wrapped command is being
          * called; otherwise auto-allocate a new gno from server.uuid. */
-        if (server.gtid_embedded_gno >= GTID_GNO_INITIAL) {
+        if (embedded_gno_executed) {
             gno = server.gtid_embedded_gno;
             uuid = server.gtid_embedded_uuid;
             uuid_len = server.gtid_embedded_uuid_len;

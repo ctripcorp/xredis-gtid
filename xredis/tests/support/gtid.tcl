@@ -200,3 +200,73 @@ proc dbsize_loadsafe {r varname} {
     set dbsize [{*}$r dbsize]
     return 1
 }
+
+# Commands whose proc rewrites argv before propagate; must stay in sync with
+# gtidGetRewriteCmdProcs() in xredis_gtid_adaptation_version_{6,8}x.c
+proc gtid_rewrite_cmd_list_common {} {
+    return {expire pexpire expireat setex psetex getset \
+        blmove brpoplpush blpop brpop bzpopmin bzpopmax geoadd}
+}
+
+proc gtid_rewrite_cmd_list_6x {} {
+    return [gtid_rewrite_cmd_list_common]
+}
+
+proc gtid_rewrite_cmd_list_8x {} {
+    return {hexpire hpexpire hexpireat hsetex}
+}
+
+proc gtid_redis_major_version {r} {
+    if {![info exists ::gtid_redis_major_version]} {
+        regexp {redis_version:(\d+)\.(\d+)\.(\d+)} [{*}$r info server] _ major minor patch
+        set ::gtid_redis_major_version $major
+    }
+    return $::gtid_redis_major_version
+}
+
+proc gtid_rewrite_cmd_list {} {
+    set cmds [gtid_rewrite_cmd_list_6x]
+    if {[gtid_redis_major_version r] >= 8} {
+        foreach cmd [gtid_rewrite_cmd_list_8x] {
+            if {[lsearch -exact $cmds $cmd] < 0} {
+                lappend cmds $cmd
+            }
+        }
+    }
+    return $cmds
+}
+
+proc gtid_rewrite_cmd_build_args {cmd} {
+    set now_s [clock seconds]
+    set now_ms [clock milliseconds]
+    switch -- [string tolower $cmd] {
+        expire     { return [list expire k1 1000] }
+        pexpire    { return [list pexpire k1 1000] }
+        expireat   { return [list expireat k1 [expr {$now_s + 100}]] }
+        setex      { return [list setex k1 10 v] }
+        psetex     { return [list psetex k1 10000 v] }
+        getset     { return [list getset getset_key new] }
+        blmove     { return [list blmove src_key dst_key LEFT RIGHT 1] }
+        brpoplpush { return [list brpoplpush src_key dst_key 1] }
+        blpop      { return [list blpop list_key 1] }
+        brpop      { return [list brpop list_key 1] }
+        bzpopmin   { return [list bzpopmin zset_key 1] }
+        bzpopmax   { return [list bzpopmax zset_key 1] }
+        geoadd     { return [list geoadd geo_key 13.36 38.11 palermo] }
+        hexpire    { return [list hexpire hash_key 100 FIELDS 1 f1] }
+        hpexpire   { return [list hpexpire hash_key 100 FIELDS 1 f1] }
+        hexpireat  { return [list hexpireat hash_key [expr {$now_s + 100}] FIELDS 1 f1] }
+        hsetex     { return [list hsetex hash_key PX 100 FIELDS 1 f2 v2] }
+        default    { return [list $cmd] }
+    }
+}
+
+proc gtid_seed_rewrite_cmd_keys {r} {
+    $r set k1 v
+    $r set getset_key v
+    $r lpush src_key a
+    $r lpush dst_key b
+    $r lpush list_key a
+    $r zadd zset_key 1 a
+    $r hset hash_key f1 v1
+}

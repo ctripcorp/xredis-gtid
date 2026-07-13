@@ -28,10 +28,15 @@ PREFIX?=.
 INSTALL_DIR?=$(PREFIX)/bin
 INSTALL=cp -rf
 
+# Parent Redis tree (ror_swap root when built as deps/xredis-gtid).
+REDIS_ROOT ?= ../..
+TEST_MODULES_DIR = $(REDIS_ROOT)/tests/modules
+
 %.o: %.c
 	echo $(CTRIP_CC)
 	$(CTRIP_CC) $(DEBUG) -MMD -o $@ -c $<
 
+# Keep 'all' as the first target so bare `make` (deps build) still builds libgtid.
 all: $(GTID_LIB)
 
 $(XREDIS_COMMANDS):
@@ -57,6 +62,10 @@ test:  $(GTID_LIB) ./gtid_test.o
 	$(CTRIP_CC)  -g -ggdb  -o  gtid_test  gtid_test.o ./lib/libgtid.a -lm -ldl
 	./gtid_test
 
+# Only invoked from Redis src/Makefile test / test-asan (not part of all).
+.PHONY: build-test-modules
+build-test-modules:
+	@$(MAKE) -C $(TEST_MODULES_DIR) propagate.so
 
 install: all
 	@mkdir -p $(INSTALL_DIR)

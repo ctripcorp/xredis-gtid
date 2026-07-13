@@ -107,6 +107,27 @@ int serverGtidSetContains(char *uuid, size_t uuid_len, gno_t gno) {
         gtidSetContains(server.gtid_lost,uuid,uuid_len,gno);
 }
 
+gno_t serverGtidUuidNextGno(const char *uuid, size_t uuid_len) {
+    gno_t next_gno = GTID_GNO_INITIAL;
+    if (server.gtid_executed) {
+        next_gno = gtidSetNext(server.gtid_executed, uuid, uuid_len, 0);
+    }
+    return next_gno;
+}
+
+int serverGtidEmbeddedGnoIsExecuted(void) {
+    if (likely(server.gtid_embedded_gno < GTID_GNO_INITIAL))
+        return 0;
+
+    gno_t next_gno = serverGtidUuidNextGno(
+        server.gtid_embedded_uuid, server.gtid_embedded_uuid_len);
+
+    return (server.gtid_embedded_gno == next_gno - 1 &&
+            serverGtidSetContains(server.gtid_embedded_uuid,
+                                  server.gtid_embedded_uuid_len,
+                                  server.gtid_embedded_gno));
+}
+
 static void serverGtidSetCurrrentUuidSetUpdateNextGno() {
     gno_t curnext, lostnext;
     curnext = gtidSetCurrentUuidSetNext(server.gtid_executed,0);
@@ -142,7 +163,6 @@ void serverGtidSetRemoveLost(gtidSet *delta_lost) {
     gtidSetDiff(server.gtid_lost,delta_lost);
 }
 
-
 void serverGtidEmbeddedClear(void) {
     server.gtid_embedded_uuid = NULL;
     server.gtid_embedded_uuid_len = 0;
@@ -160,7 +180,6 @@ void gtidCommand(client *c) {
     sds gtid = c->argv[1]->ptr;
     long long gno = 0;
     size_t uuid_len = 0;
-    int propagate_numops_before = server.also_propagate.numops;
     char* uuid = uuidGnoDecode(gtid, sdslen(gtid), &gno, &uuid_len);
     if (uuid == NULL) {
         addReplyErrorFormat(c,"gtid format error:%s", gtid);
@@ -224,67 +243,47 @@ void gtidCommand(client *c) {
         rejectCommandFormat(c,"wrong number of arguments for '%s' command",
             gtidGetCmdName(c->cmd));
         goto end;
-    } else if ((!(c->flags & CLIENT_MASTER))) {
+    } else if (!(c->flags & CLIENT_MASTER)) {
         if ((c->cmd->flags & CMD_GTID_NON_DETERMINISM)) {
             rejectCommandFormat(c,"command is nondeterminism in gtid command");
             goto end;
         }
-    } else if (c->cmd->flags & CMD_READONLY) {
-        rejectCommandFormat(c,"readonly command cannot be embedded in gtid command");
-        goto end;
-    }
+        if (c->cmd->flags & CMD_READONLY) {
+            rejectCommandFormat(c,"readonly command cannot be embedded in gtid command");
+            goto end;
+        }
 
-    /* Reject nondeterministic commands: slave re-executes and gets a different
-     * result, causing data divergence. */
-
-    if (gtidCommandHasNondeterministicOutput(c->cmd)) {
-        rejectCommandFormat(c,
-            "'%s' command is not permitted to be embedded in gtid command: "
-            "nondeterministic output would cause master/slave divergence",
-            gtidGetCmdName(c->cmd));
-        goto end;
-    }
-
-    int n_rewrite = 0;
-    const redisCommandProc **rewrite_procs = gtidGetRewriteCmdProcs(&n_rewrite);
-    for (int i = 0; i < n_rewrite; i++) {
-        if (c->cmd->proc == rewrite_procs[i]) {
+        gno_t next_gno = serverGtidUuidNextGno(uuid, uuid_len);
+        if ((gno_t)gno < next_gno) {
             rejectCommandFormat(c,
-                "'%s' command rewrites its argv (e.g. %s), "
-                "which is not supported inside gtid command. "
-                "Use the canonical form (e.g. PEXPIREAT/SET PXAT/LPOP) directly.",
-                gtidGetCmdName(c->cmd),
-                gtidGetCmdName(c->cmd));
+                "gtid gno must increase for UUID `%.*s`: got %lld, next is %lld",
+                (int)uuid_len, uuid, gno, (long long)next_gno);
             goto end;
         }
     }
 
-    serverAssert(server.gtid_embedded_uuid == NULL);
-    serverAssert(server.gtid_embedded_uuid_len == 0);
-    serverAssert(server.gtid_embedded_gno == 0);
-    serverAssert(server.gtid_embedded_dbid == -1);
-    server.gtid_embedded_uuid = uuid;
-    server.gtid_embedded_uuid_len = uuid_len;
-    server.gtid_embedded_gno = gno;
-    server.gtid_embedded_dbid = id;
-
-    long long dirty_before = server.dirty;
-    c->cmd->proc(c);
-
-    if (server.dirty != dirty_before) {
-        /* Only consume gno if there's a real effect */
-        serverAssert(gtidSetAdd(server.gtid_executed, uuid, uuid_len, gno, gno));
-        server.gtid_executed_cmd_count++;
-        /* set origin command and then rewrite it in united function.
-         * module commands propagate by themselves. */
-        if (!(c->cmd->flags & CMD_MODULE)) {
-            gtidAlsoPropagate(c->cmd, c->db->id, c->argv, c->argc,
-                    PROPAGATE_AOF|PROPAGATE_REPL);
-        }
+    if (unlikely(!(c->flags & CLIENT_MASTER) && (c->id != CLIENT_ID_AOF))) {
+        /* server.gtid_embedded* must have been cleared. */
+        serverAssert(server.gtid_embedded_uuid == NULL);
+        serverAssert(server.gtid_embedded_uuid_len == 0);
+        serverAssert(server.gtid_embedded_gno == 0);
+        serverAssert(server.gtid_embedded_dbid == -1);
+        server.gtid_embedded_uuid = uuid;
+        server.gtid_embedded_uuid_len = uuid_len;
+        server.gtid_embedded_gno = gno;
+        server.gtid_embedded_dbid = id;
     }
 
-    if (server.also_propagate.numops == propagate_numops_before)
-        serverGtidEmbeddedClear();
+    c->cmd->proc(c);
+
+    serverAssert(gtidSetAdd(server.gtid_executed, uuid, uuid_len, gno, gno));
+    server.gtid_executed_cmd_count++;
+    /* set origin command and then rewrite it in united function.
+     * module commands propagate by themselves. */
+    if (!(c->cmd->flags & CMD_MODULE)) {
+        gtidAlsoPropagate(c->cmd, c->db->id, c->argv, c->argc,
+                PROPAGATE_AOF|PROPAGATE_REPL);
+    }
 
 end:
     for(int i = 0; i < c->argc; i++) {

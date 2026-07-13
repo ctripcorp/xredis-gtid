@@ -56,7 +56,6 @@ void gtidAfterErrorReply(client *c, const char *s, size_t len, int flags);
 int isExecCommand(struct redisCommand *cmd);
 int isGtidCommand(struct redisCommand *cmd);
 char* gtidGetCmdName(struct redisCommand* cmd);
-int gtidCommandHasNondeterministicOutput(struct redisCommand *cmd);
 void gtidAlsoPropagate(struct redisCommand *cmd, int dbid, robj **argv, int argc, int target);
 struct redisCommand* gtidGetGtidCommand();
 struct redisCommand* gtidGetExecCommand();
@@ -65,5 +64,4 @@ struct redisCommand* gtidGetExecCommand();
 void gtidInitTestEnv();
 void gtidFeedReplicationBacklog(void* buffer, size_t len);
 
-const redisCommandProc **gtidGetRewriteCmdProcs(int *count);
 #endif

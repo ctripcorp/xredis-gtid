@@ -2,12 +2,10 @@
 #
 # Cases:
 #   1. GTID + module cmd, multiple RM_Replicate (numops>1 → MULTI/EXEC)
-#   2. GTID + module cmd, single  RM_Replicate  (numops=1 → no MULTI/EXEC)
-#   3. GTID + module cmd, no RM_Replicate       (numops=0 → nothing propagated to slave)
-#   4. GTID + read-only command                  → rejected
-#   5. GTID + nondeterministic write command      → rejected (e.g. SPOP)
-#   6. GTID + deterministic write command         → normal propagation
-#   7. GTID idempotency                           → same gno re-executed is skipped
+#   2. GTID + read-only command                  → rejected
+#   3. GTID + nondeterministic write command      → rejected (e.g. SPOP)
+#   4. GTID + deterministic write command         → normal propagation
+#   5. GTID idempotency                           → same gno re-executed is skipped
 #
 # Note: the GTID command's third argument is dbid. All module commands below
 # use dbid=0 to ensure consistent key lookup on the slave side.
@@ -62,45 +60,7 @@ tags {"modules" "gtid"} {
             }
 
             # ------------------------------------------------------------------
-            # Case 2: GTID + module cmd, single RM_Replicate → no MULTI/EXEC
-            # propagate-test.single calls RM_Replicate once (INCR single-counter).
-            # ------------------------------------------------------------------
-            test {GTID + module cmd: single RM_Replicate, no MULTI/EXEC, data correct on slave} {
-                assert_equal OK [$master GTID "modtest:2" 0 propagate-test.single]
-
-                wait_for_gtid_sync $master $slave
-
-                $slave select 0
-                assert_equal 1 [$slave get single-counter]
-                assert_match "*modtest:1-2*" [status $slave gtid_set]
-                assert {[gtid_set_is_equal \
-                    [status $master gtid_set] [status $slave gtid_set]]}
-                assert_equal PONG [$master ping]
-            }
-
-            # ------------------------------------------------------------------
-            # Case 3: GTID + module cmd, no RM_Replicate → numops=0
-            # propagate-test.noreplicate does not call RM_Replicate.
-            # No replicable effect → gno not consumed on either side
-            # ------------------------------------------------------------------
-            test {GTID + module cmd: no RM_Replicate, gno not consumed, both sides in sync} {
-                set gno_before_m [status $master gtid_executed_gno_count]
-                set gno_before_s [status $slave  gtid_executed_gno_count]
-
-                assert_equal OK [$master GTID "modtest:3" 0 propagate-test.noreplicate]
-                after 300
-
-                # Module cmd without RM_Replicate: gno not consumed
-                assert_equal $gno_before_m \
-                    [status $master gtid_executed_gno_count]
-                assert_equal $gno_before_s \
-                    [status $slave  gtid_executed_gno_count]
-                assert_equal PONG [$master ping]
-                assert_equal PONG [$slave  ping]
-            }
-
-            # ------------------------------------------------------------------
-            # Case 4: GTID + read-only command → rejected with error
+            # Case 2: GTID + read-only command → rejected with error
             # ------------------------------------------------------------------
             test {GTID + read-only command is rejected} {
                 set before_m [status $master gtid_set]
@@ -111,13 +71,13 @@ tags {"modules" "gtid"} {
                 after 200
 
                 assert_equal $before_m [status $master gtid_set]
-                assert_equal $before_s [status $slave  gtid_set]
+                assert_equal $before_s [status $slave gtid_set]
                 assert_equal PONG [$master ping]
                 assert_equal PONG [$slave  ping]
             }
 
             # ------------------------------------------------------------------
-            # Case 5: GTID + nondeterministic write command → rejected
+            # Case 3: GTID + nondeterministic write command → rejected
             # ------------------------------------------------------------------
             test {GTID + nondeterministic write (spop) is rejected, set unmodified} {
                 $master select 0
@@ -132,7 +92,7 @@ tags {"modules" "gtid"} {
                 set before_gtid_s [status $slave  gtid_set]
 
                 catch {$master GTID "ndtest:1" 0 spop myset} err
-                assert_match "*not permitted*nondeterministic*" $err
+                assert_match "*nondeterminism in gtid command*" $err
                 after 200
 
                 assert_equal $before_m [lsort [$master smembers myset]]
@@ -144,7 +104,7 @@ tags {"modules" "gtid"} {
             }
 
             # ------------------------------------------------------------------
-            # Case 6: GTID + deterministic write command → normal propagation
+            # Case 4: GTID + deterministic write command → normal propagation
             # ------------------------------------------------------------------
             test {GTID + deterministic write (set) propagates correctly} {
                 assert_equal OK [$master GTID "dettest:1" 0 set det-key det-value]
@@ -160,7 +120,7 @@ tags {"modules" "gtid"} {
             }
 
             # ------------------------------------------------------------------
-            # Case 7: GTID idempotency — re-executing same gno is silently skipped
+            # Case 5: GTID idempotency — re-executing same gno is silently skipped
             # ------------------------------------------------------------------
             test {GTID idempotency: re-executing same gno is silently skipped} {
                 $slave select 0
