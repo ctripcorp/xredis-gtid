@@ -38,7 +38,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             assert_equal $gaplog_len 2
 
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 2]
+            set result [$S GTIDX GAPLOG LIST 0 10]
 
             set result_str [join $result " "]
             assert_match "*s_key1*" $result_str
@@ -150,7 +150,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             assert_equal $gaplog_len 1
 
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 1]
+            set result [$S GTIDX GAPLOG LIST 0 10]
             set result_str [join $result " "]
 
             assert_match "*s_multi_key1*" $result_str
@@ -214,7 +214,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 1
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 1]
+            set result [$S GTIDX GAPLOG LIST 0 10]
             set result_str [join $result " "]
             assert_match "*s_lua_key1*" $result_str
             assert_match "*s_lua_key2*" $result_str
@@ -319,7 +319,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len $num_writes
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $num_writes]
+            set result [$S GTIDX GAPLOG LIST 0 10]
             set result_str [join $result " "]
             for {set i 1} {$i <= $num_writes} {incr i} {
                 assert_match "*s_key_$i*" $result_str
@@ -374,7 +374,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 5
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 5]
+            set result [$S GTIDX GAPLOG LIST 0 10]
             set result_str [join $result " "]
             assert_match "*s_str_key*" $result_str
             assert_match "*s_hash_key*" $result_str
@@ -432,7 +432,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 1
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 1]
+            set result [$S GTIDX GAPLOG LIST 0 10]
             set result_str [join $result " "]
             assert_match "*s_db0_key*" $result_str
 
@@ -475,7 +475,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 2
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 2]
+            set result [$S GTIDX GAPLOG LIST 0 10]
             set result_str [join $result " "]
             assert_match "*s_key*" $result_str
             assert_match "*m_key1*" $result_str

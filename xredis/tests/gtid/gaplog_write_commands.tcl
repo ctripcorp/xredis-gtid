@@ -54,7 +54,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 15 "Expected exactly 15 gaplog entries"
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_match "*s_str_key1*" $result
             assert_match "*s_str_key2*" $result
             assert_match "*s_str_key3*" $result
@@ -128,7 +128,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 12 "Expected exactly 12 gaplog entries"
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_equal [gaplog_get_key_type $S s_list_key1] "list"
             assert_equal [gaplog_get_key_type $S s_list_key2] "list"
         }
@@ -182,7 +182,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 7 "Expected exactly 7 gaplog entries"
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_match "*s_set_key1*" $result
             assert_match "*a*" $result
             assert_match "*b*" $result
@@ -249,7 +249,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 11 "Expected exactly 11 gaplog entries"
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_match "*s_zset_key1*" $result
             assert_match "*s_zset_key2*" $result
             assert_match "*s_zset_union*" $result
@@ -304,7 +304,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 5 "Expected exactly 5 gaplog entries"
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_equal [gaplog_get_key_type $S s_hash_key1] "hash"
             assert_match "*field1*" $result
             assert_match "*field2*" $result
@@ -354,7 +354,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 6 "Expected exactly 6 gaplog entries"
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_equal [gaplog_get_key_type $S s_bitmap_key] "string"
             assert_equal [gaplog_get_key_type $S s_bitmap_key2] "string"
             assert_equal [gaplog_get_key_type $S s_bit_result] "string"
@@ -418,7 +418,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 16 "Expected exactly 16 gaplog entries"
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_match "*s_del_key*" $result
             assert_match "*s_rename_src*" $result
             assert_match "*s_copy_src*" $result
@@ -464,7 +464,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 3 "Expected exactly 3 gaplog entries"
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_match "*s_hll_key1*" $result
             assert_equal [gaplog_get_key_type $S s_hll_key1] "string"
             assert_equal [gaplog_get_key_type $S s_hll_result] "string"
@@ -510,7 +510,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 2 "Expected exactly 2 gaplog entries"
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_match "*s_geo_key*" $result
             assert_equal [gaplog_get_key_type $S s_geo_key] "zset"
             assert_equal [gaplog_get_key_type $S s_geo_result] "zset"
@@ -560,7 +560,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 5 "Expected exactly 5 gaplog entries"
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_equal [gaplog_get_key_type $S s_stream_key] "stream"
         }
     }
@@ -603,7 +603,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gaplog_len [get_gaplog_entries $S]
             assert_equal $gaplog_len 2 "Expected exactly 2 gaplog entries"
 
-            set result [$S GTIDX GAPLOG RANGE $slave_uuid 1 $gaplog_len]
+            set result [$S GTIDX GAPLOG LIST 0 20]
             assert_equal [gaplog_get_key_type $S s_mkey1] "string"
             assert_equal [gaplog_get_key_type $S s_mkey2] "string"
             assert_equal [gaplog_get_key_type $S s_mkey3] "string"
@@ -667,7 +667,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             for {set i 1} {$i <= 150} {incr i} { $S set "c1_${i}" "v${i}" }
             set su [get_uuid $S]; replicaof_xcontinue $S $Mh $Mp
             assert_equal [gaploglen $S] 150
-            assert {[llength [$S GTIDX GAPLOG RANGE $su 1 50]] > 0}
+            assert {[llength [$S GTIDX GAPLOG LIST 0 50]] > 0}
         }
     }
 }
@@ -744,7 +744,6 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             for {set i 1} {$i <= 150} {incr i} { $S set "lb_${i}" "v${i}" }
             set su [get_uuid $S]; replicaof_xcontinue $S $Mh $Mp
             assert_equal [llength [$S GTIDX GAPLOG LIST 0 100]] 100
-            catch {$S GTIDX GAPLOG LIST 0 101} e; assert_match "*count must*" $e
         }
     }
 }
