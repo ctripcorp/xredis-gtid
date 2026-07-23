@@ -639,8 +639,12 @@ void gtidxCommand(client *c) {
             server.gtid_gap_log = gtidGaplogNew(server.gtid_xsync_max_gap);
             addReply(c,shared.ok);
         } else if (!strcasecmp(c->argv[2]->ptr,"all") && c->argc == 3) {
-            /* TODO */
-            serverAssert(0 && "not implemented");
+            gtidSet *gtid_set = gtidGaplogGetAll(server.gtid_gap_log);
+            size_t maxlen = gtidSetEstimatedEncodeBufferSize(gtid_set);
+            char *buf = zmalloc(maxlen);
+            size_t len = gtidSetEncode(buf, maxlen, gtid_set);
+            addReplyBulkCBuffer(c, buf, len);
+            zfree(buf);
         } else {
             addReplySubcommandSyntaxError(c);
         }

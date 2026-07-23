@@ -3,18 +3,91 @@
 #include <gtid.h>
 #include <ctype.h>
 
+void gtidGaplogNodeInit(gtidGaplogNode* node, robj* uuid, gno_t gno, gtidGaplogKeys* keys) {
+    node->uuid = uuid;
+    node->gno = gno;
+    node->keys = keys;
+}
+
+void gtidGaplogNodeDeinit(gtidGaplogNode* node) {
+    if (node == NULL) return;
+    if (node->uuid) {
+        decrRefCount(node->uuid);
+        node->uuid = NULL;
+        gtidGaplogKeysRelease(node->keys);
+        node->keys = NULL;
+    }
+
+}
+
 gtidGaplog* gtidGaplogNew(size_t capacity) {
     gtidGaplog* gaplog =  zmalloc(sizeof(gtidGaplog));
-    /* TODO */
+    gaplog->data = zmalloc(sizeof(gtidGaplogNode) * capacity);
+    for(size_t i = 0; i < capacity; i++) {
+        gtidGaplogNodeInit(&gaplog->data[i], NULL, 0, NULL);
+    }
+    gaplog->len = 0;
+    gaplog->index = 0;
+    gaplog->all = gtidSetNew();
+    gaplog->capacity = capacity;
     return gaplog;
 }
 
 void gtidGaplogRelease(gtidGaplog* gaplog) {
-    /* TODO */
+    gtidGaplogDataIterator iter;
+    gtidGaplogInitDataIterator(&iter, gaplog, 0);
+    gtidGaplogNode* node = NULL;
+    while((node = gtidGaplogDataNext(&iter))) {
+        gtidGaplogNodeDeinit(node);
+    }
+    gtidGaplogDeinitDataIterator(&iter);
+    zfree(gaplog->data);
+    gaplog->len = 0;
+    gaplog->index = 0;
+    gtidSetFree(gaplog->all);
+    zfree(gaplog);
 }
 
 void gtidGaplogResetDataSize(gtidGaplog* gaplog, size_t new_size) {
-    /* TODO */
+    if (gaplog->capacity == new_size) {
+        return;
+    }
+    gtidGaplogNode* nodes = zmalloc(sizeof(gtidGaplogNode) * new_size);
+    size_t start_index = 0;
+    if (gaplog->len > new_size) {
+        /* contraction */
+        start_index = gaplog->len - new_size;
+    } else {
+        /* Expansion */
+        start_index = 0;
+    }
+
+    gtidGaplogDataIterator iter;
+    gtidGaplogInitDataIterator(&iter, gaplog, 0);
+    gtidGaplogNode* node = NULL;
+    size_t i = 0;
+    size_t ni = 0;
+    while((node = gtidGaplogDataNext(&iter))) {
+        if (i >= start_index) {
+            nodes[ni].uuid = node->uuid;
+            node->uuid = NULL; /* move */
+            nodes[ni].gno = node->gno;
+            nodes[ni].keys = node->keys;
+            node->keys = NULL; /* move */
+            ni++;
+        } else {
+            gtidSetRemove(gaplog->all, node->uuid->ptr, sdslen(node->uuid->ptr), node->gno, node->gno);
+            decrRefCount(node->uuid);
+            gtidGaplogKeysRelease(node->keys);
+        }
+        i++;
+    }
+    gtidGaplogDeinitDataIterator(&iter);
+    zfree(gaplog->data);
+    gaplog->data = nodes;
+    gaplog->len = ni;
+    gaplog->index = 0;
+    gaplog->capacity = new_size;
 }
 
 void gtidGaplogKeysRelease(void *data) {
@@ -96,12 +169,17 @@ gtidGaplogKeys* gtidGaplogKeysBuild(gtidGaplogKeysBuilder* builder) {
 /* ========== gtidGaplog History iterator ========== */
 void gtidGaplogInitDataIterator(gtidGaplogDataIterator* iter,
                                     gtidGaplog* gaplog, size_t index) {
-    /*TODO*/
+    iter->gaplog = gaplog;
+    iter->index = index;
 }
 
 gtidGaplogNode* gtidGaplogDataNext(gtidGaplogDataIterator* iter) {
-    /*TODO*/
-    return NULL;
+    if (iter->index >= iter->gaplog->len) {
+        return NULL;
+    }
+    gtidGaplogNode* node = &iter->gaplog->data[(iter->gaplog->index + iter->index) % iter->gaplog->capacity];
+    iter->index++;
+    return node;
 }
 
 void gtidGaplogDeinitDataIterator(gtidGaplogDataIterator* iter) {
@@ -109,7 +187,11 @@ void gtidGaplogDeinitDataIterator(gtidGaplogDataIterator* iter) {
 }
 
 void gtidGaplogDataIteratorSeek(gtidGaplogDataIterator* iter, size_t index) {
-    /* TODO */
+    if (index > iter->gaplog->len) {
+        iter->index = iter->gaplog->len;
+        return;
+    }
+    iter->index = index;
 }
 
 void addReplyGtidGaplogKeys(client* c, gtidGaplogKeys* keys) {
@@ -128,7 +210,23 @@ void addReplyGtidGaplogKeys(client* c, gtidGaplogKeys* keys) {
 }
 
 int gtidGaplogInsert(gtidGaplog* gaplog, robj* uuid, gno_t gno, gtidGaplogKeys* keys) {
-    /* TODO */
+    gtidGaplogNode* last_node = NULL;
+    if (gaplog->len == gaplog->capacity) {
+        last_node = &gaplog->data[gaplog->index];
+        gtidSetRemove(gaplog->all,last_node->uuid->ptr, sdslen(last_node->uuid->ptr), last_node->gno, last_node->gno);
+        decrRefCount(last_node->uuid);
+        gtidGaplogKeysRelease(last_node->keys);
+        gaplog->index = (gaplog->index + 1) % gaplog->capacity;
+    } else {
+        last_node = &gaplog->data[(gaplog->index + gaplog->len)%gaplog->capacity];
+        gaplog->len++;
+    }
+    serverAssert(last_node != NULL);
+    incrRefCount(uuid);
+    last_node->uuid = uuid;
+    last_node->gno = gno;
+    last_node->keys = keys;
+    gtidSetAdd(gaplog->all, uuid->ptr, sdslen(uuid->ptr), gno, gno);
     return 1;
 }
 
@@ -176,8 +274,20 @@ void gtidGaplogKeysBuilderAddFromCmd(gtidGaplogKeysBuilder *builder, int dbid, r
 int gtidGaplogList(gtidGaplog* gaplog, long long start_idx, long long count,
                   gtidGaplogListCallbackFn callback,
                    void* ctx) {
-    /* TODO */
-    return 0;
+    gtidGaplogDataIterator hist_iter;
+    gtidGaplogInitDataIterator(&hist_iter, gaplog, start_idx);
+
+    int nreply = 0;
+
+    while (nreply < count) {
+        gtidGaplogNode *node = gtidGaplogDataNext(&hist_iter);
+        if (node == 0) break;
+
+        callback(node->uuid->ptr, sdslen(node->uuid->ptr), node->gno, node->keys, ctx);
+        nreply++;
+    }
+    gtidGaplogDeinitDataIterator(&hist_iter);
+    return nreply;
 }
 
 
