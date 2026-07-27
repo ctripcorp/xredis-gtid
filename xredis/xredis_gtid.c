@@ -35,17 +35,38 @@
 
 typedef struct {
     client *c;
-    int nreply;
+    long nreply;
+    robj* last_uuid;
+    void* last_uuid_deferred_len;
+    long last_uuid_nreply;
 } ListContext;
 
-static void listCallback(const char* uuid, size_t uuid_len, gno_t gno,
+static void listCallback(robj* uuid, gno_t gno,
                          gtidGaplogKeys* keys, void* ctx) {
     ListContext *lctx = (ListContext*)ctx;
-    addReplyArrayLen(lctx->c, 3);
-    addReplyBulkCBuffer(lctx->c, uuid, uuid_len);
+    serverAssert(uuid != NULL);
+    if (lctx->last_uuid == NULL) {
+        serverAssert(lctx->nreply == 0);
+        addReplyArrayLen(lctx->c, 2);
+        addReplyBulkCBuffer(lctx->c, uuid->ptr, sdslen(uuid->ptr));
+        lctx->last_uuid_deferred_len = addReplyDeferredLen(lctx->c);
+        lctx->nreply += 1;
+        lctx->last_uuid = uuid;
+        lctx->last_uuid_nreply = 0;
+
+    } else if (lctx->last_uuid != uuid) {
+        setDeferredArrayLen(lctx->c, lctx->last_uuid_deferred_len, lctx->last_uuid_nreply);
+        addReplyArrayLen(lctx->c, 2);
+        addReplyBulkCBuffer(lctx->c, uuid->ptr, sdslen(uuid->ptr));
+        lctx->last_uuid_deferred_len = addReplyDeferredLen(lctx->c);
+        lctx->nreply += 1;
+        lctx->last_uuid = uuid;
+        lctx->last_uuid_nreply = 0;
+        
+    }
     addReplyLongLong(lctx->c, gno);
     addReplyGtidGaplogKeys(lctx->c, keys);
-    lctx->nreply++;
+    lctx->last_uuid_nreply += 2;
 }
 int isGtidExecCommand(client* c) {
     return c->cmd->proc == gtidCommand && c->argc > GTID_COMMAN_ARGC &&
@@ -628,11 +649,27 @@ void gtidxCommand(client *c) {
                 return;
             }
 
-            ListContext lctx = {c, 0};
+            ListContext lctx = {c, 0, NULL, NULL, 0};
+            /*
+            [
+                [
+                    uuid, 
+                    [
+                        gno, [dbid, key, type, [subkey]],
+                        gno, [dbid, key, type, [subkey]],
+                        ...
+                    ], 
+                ]
+                ...
+            ]
+            */
             void *replylen = addReplyDeferredLen(c);
 
             gtidGaplogList(server.gtid_gap_log, start_idx, count, listCallback, &lctx);
-
+            /* end */
+            if (lctx.last_uuid_deferred_len != NULL) {
+                setDeferredArrayLen(c , lctx.last_uuid_deferred_len, lctx.last_uuid_nreply);
+            }
             setDeferredArrayLen(c, replylen, lctx.nreply);
         } else if (!strcasecmp(c->argv[2]->ptr,"clear") && c->argc == 3) {
             gtidGaplogRelease(server.gtid_gap_log);

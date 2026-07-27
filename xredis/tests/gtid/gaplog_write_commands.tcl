@@ -647,7 +647,11 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set d {}
             for {set i 0} {$i < 15} {incr i} {
                 set e [lindex [$S GTIDX GAPLOG LIST $i 1] 0]
-                foreach k [lindex $e 2] { lappend d [lindex $k 0] }
+                set body [lindex $e 1]
+                for {set j 1} {$j < [llength $body]} {incr j 2} {
+                    set keys [lindex $body $j]
+                    foreach k $keys { lappend d [lindex $k 0] }
+                }
             }
             assert_equal [llength $d] 15
             assert_equal [llength [lsearch -all -integer $d 0]] 5
@@ -684,7 +688,9 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set gl [gaploglen $S]; assert {$gl <= 50}
             set pg -1
             for {set i 0} {$i < $gl} {incr i} {
-                set g [lindex [lindex [$S GTIDX GAPLOG LIST $i 1] 0] 1]
+                set entry [lindex [$S GTIDX GAPLOG LIST $i 1] 0]
+                set body [lindex $entry 1]
+                set g [lindex $body 0]
                 assert {$g > $pg}; set pg $g
             }
         }
@@ -743,7 +749,10 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             $S replicaof no one; after 100
             for {set i 1} {$i <= 150} {incr i} { $S set "lb_${i}" "v${i}" }
             set su [get_uuid $S]; replicaof_xcontinue $S $Mh $Mp
-            assert_equal [llength [$S GTIDX GAPLOG LIST 0 100]] 100
+            set result [$S GTIDX GAPLOG LIST 0 100]
+            assert_equal [llength $result] 1
+            set inner [lindex [lindex $result 0] 1]
+            assert_equal [llength $inner] 200
         }
     }
 }

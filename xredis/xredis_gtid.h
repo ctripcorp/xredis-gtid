@@ -313,7 +313,7 @@ void gtidGaplogResetDataSize(gtidGaplog* gaplog, size_t new_size);
 
 int gtidGaplogInsert(gtidGaplog* gaplog, robj* uuid, gno_t gno, gtidGaplogKeys* keys);
 size_t gtidGaplogSize(gtidGaplog* gaplog);
-typedef void (gtidGaplogListCallbackFn)(const char* uuid, size_t uuid_len, gno_t gno, 
+typedef void (gtidGaplogListCallbackFn)(robj* uuid, gno_t gno, 
                                     gtidGaplogKeys* keys, void* ctx);
 int gtidGaplogList(gtidGaplog* gaplog, long long start_idx, long long count,
                    gtidGaplogListCallbackFn callback, 

@@ -147,12 +147,17 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 
             set list_result [$S GTIDX GAPLOG LIST 0 $page_count]
             assert {[llength $list_result] > 0}
-            assert_equal [llength $list_result] $page_count
-
+            assert_equal [llength $list_result] 1
             set first_entry [lindex $list_result 0]
-            assert_equal [llength $first_entry] 3
+            assert_equal [llength $first_entry] 2
             assert_equal [lindex $first_entry 0] $uuid
-            assert {[lindex $first_entry 1] > 0}
+            # inner_array: [gno, keys, gno, keys, ...], len = 2 * entry_count
+            set inner [lindex $first_entry 1]
+            assert_equal [llength $inner] [expr {$page_count * 2}]
+            for {set j 0} {$j < [llength $inner]} {incr j 2} {
+                set prev_gno [expr {$j == 0 ? -1 : [lindex $inner [expr {$j - 2}]]}]
+                assert {[lindex $inner $j] > $prev_gno}
+            }
 
             if {$page_count >= 2} {
                 set second_page [$S GTIDX GAPLOG LIST 1 1]
@@ -163,11 +168,16 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 
         test "GAPLOG-LIST-006: LIST returns {uuid gno {dbid key type subkeys}}" {
             set first_entry [lindex [$S GTIDX GAPLOG LIST 0 1] 0]
-            assert_equal [llength $first_entry] 3
-            assert {[string length [lindex $first_entry 0]] > 0}
-            assert {[string is integer -strict [lindex $first_entry 1]]}
-
-            set keys [lindex $first_entry 2]
+            # outer: [uuid, inner_array]
+            assert_equal [llength $first_entry] 2
+            # uuid
+            set entry_uuid [lindex $first_entry 0]
+            assert {[string length $entry_uuid] > 0}
+            # inner_array: [gno, keys, gno, keys, ...]
+            set body [lindex $first_entry 1]
+            set first_gno [lindex $body 0]
+            assert {[string is integer -strict $first_gno]}
+            set keys [lindex $body 1]
             assert {[llength $keys] > 0}
             foreach key_entry $keys {
                 assert_equal [llength $key_entry] 4
@@ -241,3 +251,5 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
         }
     }
 }
+
+

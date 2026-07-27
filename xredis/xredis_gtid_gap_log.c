@@ -177,7 +177,9 @@ gtidGaplogNode* gtidGaplogDataNext(gtidGaplogDataIterator* iter) {
     if (iter->index >= iter->gaplog->len) {
         return NULL;
     }
-    gtidGaplogNode* node = &iter->gaplog->data[(iter->gaplog->index + iter->index) % iter->gaplog->capacity];
+    size_t pos = iter->gaplog->index + iter->index;
+    if (pos >= iter->gaplog->capacity) pos -= iter->gaplog->capacity;
+    gtidGaplogNode* node = &iter->gaplog->data[pos];
     iter->index++;
     return node;
 }
@@ -281,9 +283,9 @@ int gtidGaplogList(gtidGaplog* gaplog, long long start_idx, long long count,
 
     while (nreply < count) {
         gtidGaplogNode *node = gtidGaplogDataNext(&hist_iter);
-        if (node == 0) break;
+        if (node == NULL || node->uuid == NULL) break;
 
-        callback(node->uuid->ptr, sdslen(node->uuid->ptr), node->gno, node->keys, ctx);
+        callback(node->uuid, node->gno, node->keys, ctx);
         nreply++;
     }
     gtidGaplogDeinitDataIterator(&hist_iter);

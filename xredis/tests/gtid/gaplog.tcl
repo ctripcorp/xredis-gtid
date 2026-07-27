@@ -501,9 +501,13 @@ proc assert_gaplog_contains {client uuid gno} {
     set result [$client GTIDX GAPLOG LIST 0 1000]
     foreach entry $result {
         set entry_uuid [lindex $entry 0]
-        set entry_gno [lindex $entry 1]
-        if {$entry_uuid eq $uuid && $entry_gno == $gno} {
-            return 1
+        if {$entry_uuid ne $uuid} continue
+        set body [lindex $entry 1]
+        for {set j 0} {$j < [llength $body]} {incr j 2} {
+            set entry_gno [lindex $body $j]
+            if {$entry_gno == $gno} {
+                return 1
+            }
         }
     }
     fail "Gaplog does not contain $uuid:$gno"
