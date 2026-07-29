@@ -216,6 +216,11 @@ void gtidCommand(client *c) {
         rejectCommandFormat(c,"wrong number of arguments for '%s' command",
             gtidGetCmdName(c->cmd));
         goto end;
+    } else if ((!(c->flags & CLIENT_MASTER))) {
+        if ((c->cmd->flags & CMD_GTID_NON_DETERMINISM)) {
+            rejectCommandFormat(c,"command is nondeterminism in gtid command");
+            goto end;
+        }
     }
 
     c->cmd->proc(c);
