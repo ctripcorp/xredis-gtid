@@ -212,6 +212,35 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
             set mygtidset "$myuuid:1-$mygno"
             assert_match  "*$mygtidset*" [status $master gtid_executed]
         }
+
+        # Verify that INCR on master replicates to slave (rewrite-command via
+        # CLIENT_MASTER exemption), and that users cannot embed INCR in GTID.
+        test "propagte repl: INCR on master replicates, user GTID+INCR rejected" {
+            # Create key on master and sync to slave.
+            $master SET incrkey 0
+            wait_for_gtid_sync $master $slave
+
+            # INCR has CMD_GTID_NON_DETERMINISM flag (rewrites to a SET internally),
+            # but CLIENT_MASTER exemption allows slave-side execution via GTID.
+            $master INCR incrkey
+            wait_for_gtid_sync $master $slave
+
+            # Replication stream shows GTID-wrapped INCR (original argv, not rewritten).
+            assert_replication_stream $master_repl [list \
+                "gtid $myuuid:* * SET incrkey 0" \
+                "gtid $myuuid:* * INCR incrkey"]
+            assert_replication_stream $slave_repl [list \
+                "gtid $myuuid:* * SET incrkey 0" \
+                "gtid $myuuid:* * INCR incrkey"]
+
+            # Both sides agree on the incremented value.
+            assert_equal [$master GET incrkey] 1
+            assert_equal [$slave  GET incrkey] 1
+
+            # User cannot embed INCR in GTID (CMD_GTID_NON_DETERMINISM rejection).
+            catch {$master GTID B:1 0 INCR incrkey} err
+            assert_match {*ERR*} $err
+        }
     }
 }
 
@@ -495,5 +524,97 @@ start_server {tags {"repl"} overrides} {
         $slave select 3
         assert_equal [$slave get k] v1
 
+    }
+}
+
+
+
+
+proc gtid_rewrite_cmd_list {} {
+    return {
+        append
+        blmove
+        blmpop
+        blpop
+        brpop
+        brpoplpush
+        bzmpop
+        bzpopmax
+        bzpopmin
+        expire
+        expireat
+        getdel
+        getex
+        getset
+        hexpire
+        hgetdel
+        hgetex
+        hincrby
+        hincrbyfloat
+        hpexpire
+        hsetex
+        incrbyfloat
+        incr
+        decr
+        pexpire
+        psetex
+        setex
+        setrange
+        spop
+        zmpop
+    }
+}
+
+# Verify that GTID command rejects commands that would rewrite their argv
+# (e.g. expire -> PEXPIREAT, setex -> SET PX, incrbyfloat -> SET). Rewriting
+# argv inside the gtid command body is unsafe: the rewritten argv is dropped
+# on gtidCommand exit (which restores orig_argv), so the unrewritten original
+# is written to AOF/replication and breaks master-replica consistency. The
+# command list is version-specific and supplied by gtid_rewrite_cmd_list.
+start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
+    test {GTID should reject commands that rewrite argv} {
+        set rewrite_cmds [gtid_rewrite_cmd_list]
+        set gno 1
+        set now_seconds [clock seconds]
+        set now_ms [clock milliseconds]
+
+        foreach cmd $rewrite_cmds {
+            switch -- $cmd {
+                "append"        { set args [list $cmd rw_append v] }
+                "expire"        { set args [list $cmd k1 1000] }
+                "pexpire"       { set args [list $cmd k1 1000] }
+                "expireat"      { set args [list $cmd k1 [expr {$now_seconds + 100}]] }
+                "setex"         { set args [list $cmd k1 10 v] }
+                "psetex"        { set args [list $cmd k1 10000 v] }
+                "getdel"        { set args [list $cmd rw_getdel k] }
+                "getset"        { set args [list $cmd getset_key new] }
+                "getex"         { set args [list $cmd getset_key EX 100] }
+                "setrange"      { set args [list $cmd rw_setrange 0 v] }
+                "incr"          { set args [list $cmd incr_key] }
+                "decr"          { set args [list $cmd decr_key] }
+                "hexpire"       { set args [list $cmd hash_key 100 f1] }
+                "hpexpire"      { set args [list $cmd hash_key 100 f1] }
+                "hsetex"        { set args [list $cmd hash_key 100 f2 v2] }
+                "hgetdel"       { set args [list $cmd hash_key f1] }
+                "hgetex"        { set args [list $cmd hash_key f1 EX 100] }
+                "hincrby"       { set args [list $cmd hash_key f1 1] }
+                "hincrbyfloat"  { set args [list $cmd hash_key f1 1.1] }
+                "incrbyfloat"   { set args [list $cmd getset_key 1.1] }
+                "blmove"        { set args [list $cmd src_key dst_key LEFT RIGHT 1] }
+                "brpoplpush"    { set args [list $cmd src_key dst_key 1] }
+                "blpop"         { set args [list $cmd list_key 1] }
+                "brpop"         { set args [list $cmd list_key 1] }
+                "blmpop"        { set args [list $cmd list_key 2 LEFT 1] }
+                "bzpopmin"      { set args [list $cmd zset_key 1] }
+                "bzpopmax"      { set args [list $cmd zset_key 1] }
+                "bzmpop"        { set args [list $cmd hash_key 2 MIN 1] }
+                "zmpop"         { set args [list $cmd hash_key 2 MIN] }
+                "spop"          { set args [list $cmd spop_key] }
+                default         { fail "unexpected command $cmd" }
+            }
+            catch {r gtid A:$gno 0 {*}$args} result
+            assert_match {*ERR*} $result
+            incr gno
+        }
     }
 }
