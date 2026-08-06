@@ -17,7 +17,7 @@ FINAL_CFLAGS=$(STD) $(OPTIMIZATION) $(CFLAGS) -I./include -I./
 
 CTRIP_CC=$(CC) $(FINAL_CFLAGS)
 GTID_LIB=lib/libgtid.a
-GTID_OBJ=gtid.o gtid_util.o gtid_skiplist.o
+GTID_OBJ=gtid.o gtid_util.o
 XREDIS_COMMANDS=./xredis/xredis_commands.def
 AR=ar
 ARFLAGS=rcu

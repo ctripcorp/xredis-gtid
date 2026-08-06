@@ -2,47 +2,92 @@
 #include "xredis_gtid_adaptation_version.h"
 #include <gtid.h>
 #include <ctype.h>
-static void uuidSetFreeWrapper(void *ptr) {
-    uuidSet *us = (uuidSet*)ptr;
-    if (us) {
-        uuidSetFree(us);
-    }
+
+void gtidGaplogNodeInit(gtidGaplogNode* node, robj* uuid, gno_t gno, gtidGaplogKeys* keys) {
+    node->uuid = uuid;
+    node->gno = gno;
+    node->keys = keys;
 }
 
-void gtidGaplogSkiplistDestructor(void *privdata, void *val) {
-    UNUSED(privdata);
-    skiplist *sl = (skiplist*)val;
-    if (sl) {
-        skiplistFree(sl);
+void gtidGaplogNodeDeinit(gtidGaplogNode* node) {
+    if (node == NULL) return;
+    if (node->uuid) {
+        decrRefCount(node->uuid);
+        node->uuid = NULL;
+        gtidGaplogKeysRelease(node->keys);
+        node->keys = NULL;
     }
+
 }
 
-static dictType gtidGaplogDictType = {
-    .hashFunction = dictSdsHash,
-    .keyCompare = dictSdsKeyCompare,
-    .keyDestructor = dictSdsDestructor,
-    .valDestructor = gtidGaplogSkiplistDestructor
-};
-
-gtidGaplog* gtidGaplogNew() {
+gtidGaplog* gtidGaplogNew(size_t capacity) {
     gtidGaplog* gaplog =  zmalloc(sizeof(gtidGaplog));
-    gaplog->data = gtidDictCreate(&gtidGaplogDictType);
-    gaplog->size = 0;
-    gaplog->history = listCreate();
-    listSetFreeMethod(gaplog->history, uuidSetFreeWrapper);
+    gaplog->data = zmalloc(sizeof(gtidGaplogNode) * capacity);
+    for(size_t i = 0; i < capacity; i++) {
+        gtidGaplogNodeInit(&gaplog->data[i], NULL, 0, NULL);
+    }
+    gaplog->len = 0;
+    gaplog->index = 0;
+    gaplog->all = gtidSetNew();
+    gaplog->capacity = capacity;
     return gaplog;
 }
 
-void gtidGaplogReset(gtidGaplog* gaplog) {
-    dictEmpty(gaplog->data, NULL);
-    gaplog->size = 0;
-    listEmpty(gaplog->history);
+void gtidGaplogRelease(gtidGaplog* gaplog) {
+    gtidGaplogDataIterator iter;
+    gtidGaplogInitDataIterator(&iter, gaplog, 0);
+    gtidGaplogNode* node = NULL;
+    while((node = gtidGaplogDataNext(&iter))) {
+        gtidGaplogNodeDeinit(node);
+    }
+    gtidGaplogDeinitDataIterator(&iter);
+    zfree(gaplog->data);
+    gaplog->len = 0;
+    gaplog->index = 0;
+    gtidSetFree(gaplog->all);
+    zfree(gaplog);
 }
 
-void gtidGaplogRelease(gtidGaplog* gaplog) {
-    dictRelease(gaplog->data);
-    listRelease(gaplog->history);
-    gaplog->size = 0;
+void gtidGaplogResetDataSize(gtidGaplog* gaplog, size_t new_size) {
+    if (gaplog->capacity == new_size) {
+        return;
+    }
+    gtidGaplogNode* nodes = zmalloc(sizeof(gtidGaplogNode) * new_size);
+    size_t start_index = 0;
+    if (gaplog->len > new_size) {
+        /* contraction */
+        start_index = gaplog->len - new_size;
+    } else {
+        /* Expansion */
+        start_index = 0;
+    }
+
+    gtidGaplogDataIterator iter;
+    gtidGaplogInitDataIterator(&iter, gaplog, 0);
+    gtidGaplogNode* node = NULL;
+    size_t i = 0;
+    size_t ni = 0;
+    while((node = gtidGaplogDataNext(&iter))) {
+        if (i >= start_index) {
+            nodes[ni].uuid = node->uuid;
+            node->uuid = NULL; /* move */
+            nodes[ni].gno = node->gno;
+            nodes[ni].keys = node->keys;
+            node->keys = NULL; /* move */
+            ni++;
+        } else {
+            gtidSetRemove(gaplog->all, node->uuid->ptr, sdslen(node->uuid->ptr), node->gno, node->gno);
+            decrRefCount(node->uuid);
+            gtidGaplogKeysRelease(node->keys);
+        }
+        i++;
+    }
+    gtidGaplogDeinitDataIterator(&iter);
+    zfree(gaplog->data);
+    gaplog->data = nodes;
+    gaplog->len = ni;
+    gaplog->index = 0;
+    gaplog->capacity = new_size;
 }
 
 void gtidGaplogKeysRelease(void *data) {
@@ -83,7 +128,7 @@ gtidGaplogKey** gtidGaplogKeysPrepareBuilder(gtidGaplogKeysBuilder* builder, int
 
     if (add_numkeys  + builder->numkeys > builder->size) {
         long long update_numkeys = builder->size;
-        while(builder->size < (add_numkeys + builder->numkeys)) {
+        while(update_numkeys < (add_numkeys + builder->numkeys)) {
           update_numkeys *= 2;
         }
         if (builder->keys_infos != builder->cache) {
@@ -121,120 +166,34 @@ gtidGaplogKeys* gtidGaplogKeysBuild(gtidGaplogKeysBuilder* builder) {
     return keys;
 }
 
-/* ========== gtidGaplog Data iterator ========== */
-void gtidGaplogDataInitIterator(gtidGaplogDataIterator *iter, skiplist *sl, gno_t start_gno) {
-    skiplistInitIterator(&iter->sl_iter, sl);
-    skiplistIteratorSeek(&iter->sl_iter, start_gno);
-}
-
-void gtidGaplogDeinitDataIterator(gtidGaplogDataIterator *iter) {
-    skiplistDeinitIterator(&iter->sl_iter);
-}
-
-void gtidGaplogDataIteratorSeek(gtidGaplogDataIterator *iter, gno_t gno) {
-    skiplistIteratorSeek(&iter->sl_iter, gno);
-}
-
-gno_t gtidGaplogDataGetGno(gtidGaplogDataIterator* iter) {
-    skiplistNode *node = iter->sl_iter.next;
-    if (node == NULL) return -1;
-    return (gno_t)node->score;
-}
-
-gtidGaplogKeys* gtidGaplogDataNext(gtidGaplogDataIterator* iter) {
-    skiplistNode *node = skiplistIteratorNext(&iter->sl_iter);
-    if (node == NULL) return NULL;
-    return (gtidGaplogKeys*)node->value;
-}
-
 /* ========== gtidGaplog History iterator ========== */
-void gtidGaplogInitHistoryIterator(gtidGaplogHistoryIterator* iter,
-                                    gtidGaplog* gaplog, long long index) {
-    iter->history = gaplog->history;
-    gtidGaplogHistoryIteratorSeek(iter, index);
+void gtidGaplogInitDataIterator(gtidGaplogDataIterator* iter,
+                                    gtidGaplog* gaplog, size_t index) {
+    iter->gaplog = gaplog;
+    iter->index = index;
 }
 
-gno_t gtidGaplogHistoryNext(gtidGaplogHistoryIterator* iter,
-                             const char** uuid, size_t* uuid_len) {
-    if (iter->list_node == NULL) {
-        *uuid = NULL;
-        *uuid_len = 0;
-        return 0;
+gtidGaplogNode* gtidGaplogDataNext(gtidGaplogDataIterator* iter) {
+    if (iter->index >= iter->gaplog->len) {
+        return NULL;
     }
-
-    uuidSet *us = listNodeValue(iter->list_node);
-    *uuid = us->uuid;
-    *uuid_len = us->uuid_len;
-
-    gno_t result = iter->next_gno;
-
-    iter->next_gno++;
-
-    if (iter->next_gno > iter->interval_node->end) {
-        iter->interval_node = iter->interval_node->forwards[0];
-        if (iter->interval_node) {
-            iter->next_gno = iter->interval_node->start;
-        } else {
-            iter->list_node = listNextNode(iter->list_node);
-            if (iter->list_node) {
-                us = listNodeValue(iter->list_node);
-                iter->interval_node = us->intervals->header->forwards[0];
-                iter->next_gno = iter->interval_node->start;
-            }
-        }
-    }
-    return result;
+    size_t pos = iter->gaplog->index + iter->index;
+    if (pos >= iter->gaplog->capacity) pos -= iter->gaplog->capacity;
+    gtidGaplogNode* node = &iter->gaplog->data[pos];
+    iter->index++;
+    return node;
 }
 
-void gtidGaplogDeinitHistoryIterator(gtidGaplogHistoryIterator* iter) {
+void gtidGaplogDeinitDataIterator(gtidGaplogDataIterator* iter) {
     UNUSED(iter);
 }
 
-/* Reposition the history iterator so the next call to
- * gtidGaplogHistoryNext returns the entry at the given `index` (0-based
- * position within the gap log's gno sequence). Walks across uuidSets and
- * their intervals, skipping `index` entries. Always resets from the head
- * of the history list, so multiple calls work correctly. If `index` is
- * past the end, leave the iterator in the exhausted state (list_node = NULL). */
-void gtidGaplogHistoryIteratorSeek(gtidGaplogHistoryIterator* iter, long long index) {
-    /* Always reset from the head of the history list */
-    iter->list_node = listFirst(iter->history);
-    iter->interval_node = NULL;
-    iter->next_gno = 0;
-    if (iter->list_node == NULL) return;
-    uuidSet *us = listNodeValue(iter->list_node);
-    iter->interval_node = us->intervals->header->forwards[0];
-    long long remaining = index;
-    while (iter->list_node && remaining > 0) {
-        us = listNodeValue(iter->list_node);
-        gno_t us_count = uuidSetCount(us);
-        if (remaining >= us_count) {
-            remaining -= us_count;
-            iter->list_node = listNextNode(iter->list_node);
-            if (iter->list_node) {
-                us = listNodeValue(iter->list_node);
-                iter->interval_node = us->intervals->header->forwards[0];
-            }
-            continue;
-        }
-        break;
+void gtidGaplogDataIteratorSeek(gtidGaplogDataIterator* iter, size_t index) {
+    if (index > iter->gaplog->len) {
+        iter->index = iter->gaplog->len;
+        return;
     }
-
-    while (iter->interval_node && remaining > 0) {
-        gno_t interval_len = iter->interval_node->end - iter->interval_node->start + 1;
-        if (remaining >= interval_len) {
-            remaining -= interval_len;
-            iter->interval_node = iter->interval_node->forwards[0];
-            continue;
-        }
-        break;
-    }
-
-    if (iter->list_node && iter->interval_node) {
-        iter->next_gno = iter->interval_node->start + remaining;
-    } else {
-        iter->list_node = NULL;
-    }
+    iter->index = index;
 }
 
 void addReplyGtidGaplogKeys(client* c, gtidGaplogKeys* keys) {
@@ -252,181 +211,35 @@ void addReplyGtidGaplogKeys(client* c, gtidGaplogKeys* keys) {
     }
 }
 
-int gtidGaplogTrim(gtidGaplog* gap_log ,size_t size) {
-    size_t count = 0;
-    while (count < size) {
-        listNode *first_ln = listFirst(gap_log->history);
-        if (first_ln == NULL) return count;
-
-        uuidSet *first_uuid_set = (uuidSet*)listNodeValue(first_ln);
-
-        gno_t min_gno = 0;
-        gtidIntervalNode *first_node = first_uuid_set->intervals->header->forwards[0];
-        if (first_node == NULL) {
-            listDelNode(gap_log->history, first_ln);
-            continue;
-        }
-        min_gno = first_node->start;
-
-        sds evict_uuid_sds = sdsnewlen(first_uuid_set->uuid, first_uuid_set->uuid_len);
-        dictEntry *de = dictFind(gap_log->data, evict_uuid_sds);
-        if (de != NULL) {
-            skiplist *sl = dictGetVal(de);
-            serverAssert(skiplistDelete(sl, min_gno));
-            if (sl->length == 0) {
-                dictDelete(gap_log->data, evict_uuid_sds);
-            }
-        } else {
-            serverPanic("not find keysinfo in gtid_gap_log");
-        }
-        sdsfree(evict_uuid_sds);
-        serverAssert((uuidSetRemove(first_uuid_set, min_gno, min_gno) > 0));
-        if (uuidSetCount(first_uuid_set) == 0) {
-            listDelNode(gap_log->history, first_ln);
-        }
-        gap_log->size--;
-        count++;
-        
-    }
-    return count;
-}
-
-skipType gtid_skip_type = {
-    .freeValue = gtidGaplogKeysRelease
-};
-
-static inline skiplist* gtidGaplogFindSkiplist(gtidGaplog* gaplog, sds uuid) {
-    dictEntry *de = dictFind(gaplog->data, uuid);
-    return de ? dictGetVal(de) : NULL;
-}
-
-static skiplist* gtidGaplogFindOrCreateSkiplist(gtidGaplog* gaplog, sds uuid) {
-    dictEntry *de = dictFind(gaplog->data, uuid);
-    if (de == NULL) {
-        skiplist *sl = skiplistCreate(&gtid_skip_type);
-        sds uuid_key = sdsdup(uuid);
-        dictAdd(gaplog->data, uuid_key, sl);
-        return sl;
-    }
-    return dictGetVal(de);
-}
-
-static skiplist* gtidGaplogFindSkiplistWithUUID(gtidGaplog* gaplog, 
-                                                 const char* uuid, size_t uuid_len) {
-    sds key = sdsnewlen(uuid, uuid_len);
-    dictEntry *de = dictFind(gaplog->data, key);
-    sdsfree(key);
-    serverAssert(de != NULL);
-    return dictGetVal(de);
-}
-
-int gtidGaplogInsert(gtidGaplog* gaplog, sds uuid, gno_t gno, gtidGaplogKeys* keys) {
-
-    skiplist *sl = gtidGaplogFindOrCreateSkiplist(gaplog, uuid);
-
-    serverAssert(skiplistInsert(sl, gno, keys, 1) != 0);
-
-    uuidSet *last_uuid_set = NULL;
-    listNode *tail_ln = listLast(gaplog->history);
-    if (tail_ln != NULL) {
-        last_uuid_set = (uuidSet*)listNodeValue(tail_ln);
-        if (last_uuid_set->uuid_len != sdslen(uuid) ||
-            memcmp(last_uuid_set->uuid, uuid, sdslen(uuid)) != 0) {
-            last_uuid_set = NULL;
-        }
-    }
-
-    if (last_uuid_set != NULL) {
-        uuidSetAdd(last_uuid_set, gno, gno);
+int gtidGaplogInsert(gtidGaplog* gaplog, robj* uuid, gno_t gno, gtidGaplogKeys* keys) {
+    gtidGaplogNode* last_node = NULL;
+    if (gaplog->len == gaplog->capacity) {
+        last_node = &gaplog->data[gaplog->index];
+        gtidSetRemove(gaplog->all,last_node->uuid->ptr, sdslen(last_node->uuid->ptr), last_node->gno, last_node->gno);
+        decrRefCount(last_node->uuid);
+        gtidGaplogKeysRelease(last_node->keys);
+        gaplog->index = (gaplog->index + 1) % gaplog->capacity;
     } else {
-        uuidSet *new_uuid_set = uuidSetNew(uuid, sdslen(uuid));
-        uuidSetAdd(new_uuid_set, gno, gno);
-        listAddNodeTail(gaplog->history, new_uuid_set);
+        last_node = &gaplog->data[(gaplog->index + gaplog->len)%gaplog->capacity];
+        gaplog->len++;
     }
-
-    gaplog->size++;
-    
-    if (gaplog->size >
-            (size_t)server.gtid_xsync_max_gap) {
-        gtidGaplogTrim(gaplog,
-                        gaplog->size -
-                        server.gtid_xsync_max_gap);
-    }
+    serverAssert(last_node != NULL);
+    incrRefCount(uuid);
+    last_node->uuid = uuid;
+    last_node->gno = gno;
+    last_node->keys = keys;
+    gtidSetAdd(gaplog->all, uuid->ptr, sdslen(uuid->ptr), gno, gno);
     return 1;
 }
 
-int gtidGaplogDeleteRange(gtidGaplog* gaplog, sds uuid, gno_t start_gno, gno_t end_gno) {
-    serverAssert(start_gno <= end_gno);
-
-    long long deleted = 0;
-    skiplist *sl = gtidGaplogFindSkiplist(gaplog, uuid);
-    if (sl != NULL) {
-
-        gtidGaplogDataIterator iter;
-        gtidGaplogDataInitIterator(&iter, sl, start_gno);
-        gno_t gno = -1;
-        while ((gno = gtidGaplogDataGetGno(&iter)) != -1 && gno <= end_gno) {
-            gtidGaplogDataNext(&iter);
-            if (skiplistDelete(sl, gno)) {
-                deleted++;
-            }
-        }
-        gtidGaplogDeinitDataIterator(&iter);
-        if (sl->length == 0) {
-            dictDelete(gaplog->data, uuid);
-        }
-        gaplog->size -= deleted;
-    }
-
-    gno_t history_removed = 0;
-    listNode *ln = listFirst(gaplog->history);
-    while (ln) {
-        uuidSet *us = listNodeValue(ln);
-        listNode *next_ln = listNextNode(ln);
-        if (us->uuid_len == sdslen(uuid) &&
-            memcmp(us->uuid, uuid, sdslen(uuid)) == 0) {
-            history_removed += uuidSetRemove(us, start_gno, end_gno);
-            if (uuidSetCount(us) == 0) {
-                listDelNode(gaplog->history, ln);
-            }
-        }
-        ln = next_ln;
-    }
-
-    serverAssert(history_removed == deleted);
-    return deleted;
-}
-
-int gtidGaplogQueryRange(gtidGaplog* gaplog, sds uuid, gno_t start_gno, gno_t end_gno,
-                         gtidGaplogQueryRangeCallbackFn callback, void* ctx) {
-    serverAssert(start_gno <= end_gno);
-    skiplist *sl = gtidGaplogFindSkiplist(gaplog, uuid);
-    if (sl == NULL) {
-        return 0;
-    }
-
-    long long count = 0;
-
-    gtidGaplogDataIterator iter;
-    gtidGaplogDataInitIterator(&iter, sl, start_gno);
-
-    gno_t gno;
-    while ((gno = gtidGaplogDataGetGno(&iter)) != -1 && gno <= end_gno) {
-        gtidGaplogKeys *keys = gtidGaplogDataNext(&iter);
-        callback(gno, keys, ctx);
-        count++;
-    }
-
-    gtidGaplogDeinitDataIterator(&iter);
-
-    return count;
-}
-
 size_t gtidGaplogSize(gtidGaplog* gaplog) {
-    if (gaplog == NULL) {
-        return 0;
-    }
-    return gaplog->size;
+    if (gaplog == NULL) return 0;
+    return gaplog->len;
+}
+
+gtidSet* gtidGaplogGetAll(gtidGaplog* gaplog) {
+    if (gaplog == NULL) return NULL;
+    return gaplog->all;
 }
 
 void gtidGaplogKeysBuilderAdd(gtidGaplogKeysBuilder *builder, int dbid, int type, sds key,
@@ -463,39 +276,19 @@ void gtidGaplogKeysBuilderAddFromCmd(gtidGaplogKeysBuilder *builder, int dbid, r
 int gtidGaplogList(gtidGaplog* gaplog, long long start_idx, long long count,
                   gtidGaplogListCallbackFn callback,
                    void* ctx) {
+    gtidGaplogDataIterator hist_iter;
+    gtidGaplogInitDataIterator(&hist_iter, gaplog, start_idx);
 
-    gtidGaplogHistoryIterator hist_iter;
-    gtidGaplogInitHistoryIterator(&hist_iter, gaplog, start_idx);
-
-    gtidGaplogDataIterator data_iter;
-    const char *last_uuid = NULL;
-    skiplist *sl = NULL;
     int nreply = 0;
 
     while (nreply < count) {
-        const char *uuid;
-        size_t uuid_len;
-        gno_t gno = gtidGaplogHistoryNext(&hist_iter, &uuid, &uuid_len);
-        if (gno == 0) break;
+        gtidGaplogNode *node = gtidGaplogDataNext(&hist_iter);
+        if (node == NULL || node->uuid == NULL) break;
 
-        if (last_uuid != uuid) {
-            sl = gtidGaplogFindSkiplistWithUUID(gaplog, uuid, uuid_len);
-            gtidGaplogDeinitDataIterator(&data_iter);
-            gtidGaplogDataInitIterator(&data_iter, sl, gno);
-            last_uuid = uuid;
-        } else if (gtidGaplogDataGetGno(&data_iter) != gno) {
-            gtidGaplogDeinitDataIterator(&data_iter);
-            gtidGaplogDataInitIterator(&data_iter, sl, gno);
-        }
-
-        serverAssert(gtidGaplogDataGetGno(&data_iter) == gno);
-        gtidGaplogKeys *keys = gtidGaplogDataNext(&data_iter);
-
-        callback(uuid, uuid_len, gno, keys, ctx);
+        callback(node->uuid, node->gno, node->keys, ctx);
         nreply++;
     }
-    gtidGaplogDeinitDataIterator(&data_iter);
-    gtidGaplogDeinitHistoryIterator(&hist_iter);
+    gtidGaplogDeinitDataIterator(&hist_iter);
     return nreply;
 }
 
@@ -713,7 +506,8 @@ void gtidGaplogFillFromGtidSet(gtidSet *mlost) {
 
         gtidIntervalNode *node = NULL;
         while ((node = uuidSetIteratorNext(&us_iterator)) != NULL) {
-            sds uuid = sdsnewlen(us->uuid, us->uuid_len);
+            robj* shard_uuid = createStringObject(us->uuid, us->uuid_len);
+            sds uuid = shard_uuid->ptr;
             for (gno_t gno = node->start; gno <= node->end; gno++) {
                 long long offset = gtidSeqLookup(server.gtid_seq, uuid,
                                                   sdslen(uuid), gno);
@@ -748,12 +542,12 @@ void gtidGaplogFillFromGtidSet(gtidSet *mlost) {
                 }
 
                 if (builder.numkeys > 0) {
-                    gtidGaplogInsert(server.gtid_gap_log, uuid, gno, gtidGaplogKeysBuild(&builder));
+                    gtidGaplogInsert(server.gtid_gap_log, shard_uuid, gno, gtidGaplogKeysBuild(&builder));
                 }
                 gtidGaplogDeinitKeysBuilder(&builder);
 
             }
-            sdsfree(uuid);
+            decrRefCount(shard_uuid);
         }
         uuidSetDeinitIterator(&us_iterator);
     }
@@ -946,278 +740,109 @@ int gapLogTest(int argc, char **argv, int accurate) {
         gtidGaplogDeinitKeysBuilder(&builder);
     }
 
-    TEST("gtid - gapLog new, reset and release") {
+    TEST("gtid - gapLog empty lifecycle") {
+        gtidGaplog *gaplog = gtidGaplogNew(3);
+        test_assert(gtidGaplogSize(gaplog) == 0);
 
-        gtidGaplog *gap_log = gtidGaplogNew();
-        test_assert(gap_log != NULL);
-        test_assert(gap_log->size == 0);
-        test_assert(gap_log->data != NULL);
-        test_assert(gap_log->history != NULL);
-        test_assert(dictSize(gap_log->data) == 0);
-        test_assert(listLength(gap_log->history) == 0);
-
-        /* reset */
-        gtidGaplogReset(gap_log);
-        test_assert(gap_log->size == 0);
-        test_assert(dictSize(gap_log->data) == 0);
-        test_assert(listLength(gap_log->history) == 0);
-
-        /* relase */
-        gtidGaplogRelease(gap_log);
-        zfree(gap_log);
-    }
-
-    TEST("gtid - gapLog data insert and iterate") {
-        gtidGaplog *gap_log = gtidGaplogNew();
-        sds uuid = sdsnew("uuid-test");
-
-        /* add keys (gno=1) */
-        {
-            gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
-            gtidGaplogKeysPrepareBuilder(&builder, 1);
-            sds k = sdsnew("key_a");
-            builder.keys_infos[builder.numkeys++] =
-                gtidGaplogKeyNew(0, OBJ_STRING, k, NULL, 0);
-            gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
-            gtidGaplogDeinitKeysBuilder(&builder);
-
-            int ret = gtidGaplogInsert(gap_log, uuid, 1, keys);
-            test_assert(ret == 1);
-        }
-
-        /* add keys (gno=5) */
-        {
-            gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
-            gtidGaplogKeysPrepareBuilder(&builder, 1);
-            sds k = sdsnew("hashkey");
-            sds *subs = zmalloc(sizeof(sds) * 1);
-            subs[0] = sdsnew("field_a");
-            builder.keys_infos[builder.numkeys++] =
-                gtidGaplogKeyNew(0, OBJ_HASH, k, subs, 1);
-            gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
-            gtidGaplogDeinitKeysBuilder(&builder);
-            int ret = gtidGaplogInsert(gap_log, uuid, 5, keys);
-            test_assert(ret == 1);
-        }
-
-        test_assert(gtidGaplogSize(gap_log) == 2);
-
-        listNode *ln = listFirst(gap_log->history);
-        test_assert(ln != NULL);
-        uuidSet *us = (uuidSet*)listNodeValue(ln);
-        test_assert(us != NULL);
-
-        sds stored_uuid = sdsnewlen(us->uuid, us->uuid_len);
-        dictEntry *de = dictFind(gap_log->data, stored_uuid);
-        sdsfree(stored_uuid);
-        test_assert(de != NULL);
-        skiplist *sl = dictGetVal(de);
         gtidGaplogDataIterator iter;
-        gtidGaplogDataInitIterator(&iter, sl, 1);
-        gno_t gno = gtidGaplogDataGetGno(&iter);
-        test_assert(gno == 1);
-        gtidGaplogKeys *k1 = gtidGaplogDataNext(&iter);
-        test_assert(k1 != NULL);
-        test_assert(k1->size == 1);
-        test_assert(k1->keys[0]->key_type == OBJ_STRING);
-        test_assert(sdslen(k1->keys[0]->key) == 5); /* "key_a" */
-
-        /* 2 node */
-        gno = gtidGaplogDataGetGno(&iter);
-        test_assert(gno == 5);
-        gtidGaplogKeys *k2 = gtidGaplogDataNext(&iter);
-        test_assert(k2 != NULL);
-        test_assert(k2->size == 1);
-        test_assert(k2->keys[0]->key_type == OBJ_HASH);
-        test_assert(k2->keys[0]->subkeys_count == 1);
-        test_assert(sdslen(k2->keys[0]->subkeys[0]) == 7); /* "field_a" */
-
-        gtidGaplogKeys *k3 = gtidGaplogDataNext(&iter);
-        test_assert(k3 == NULL);
-
+        gtidGaplogInitDataIterator(&iter, gaplog, 0);
+        test_assert(gtidGaplogDataNext(&iter) == NULL);
         gtidGaplogDeinitDataIterator(&iter);
-
-        gtidGaplogDataInitIterator(&iter, sl, 3);
-        gno = gtidGaplogDataGetGno(&iter);
-        test_assert(gno == 5);
-        gtidGaplogKeys *k_mid = gtidGaplogDataNext(&iter);
-        test_assert(k_mid != NULL);
-        test_assert(sdslen(k_mid->keys[0]->key) == 7); /* "hashkey" */
-        gtidGaplogDeinitDataIterator(&iter);
-
-        gtidGaplogDataInitIterator(&iter, sl, 10);
-        gno = gtidGaplogDataGetGno(&iter);
-        test_assert(gno == -1); /* not find node */
-        gtidGaplogKeys *k_empty = gtidGaplogDataNext(&iter);
-        test_assert(k_empty == NULL);
-        gtidGaplogDeinitDataIterator(&iter);
-
-        sdsfree(uuid);
-        gtidGaplogRelease(gap_log);
+        gtidGaplogRelease(gaplog);
     }
 
-    TEST("gtid - gapLog history iterator") {
+    TEST("gtid - gapLog preserves insertion order before wrap") {
+        gtidGaplog *gaplog = gtidGaplogNew(3);
+        robj *uuid1 = createStringObject("uuid-1", 6);
+        robj *uuid2 = createStringObject("uuid-2", 6);
+        gtidGaplogKeysBuilder builder1 = GTID_GAPLOG_KEYS_BUILDER_INIT;
+        gtidGaplogKeysBuilder builder2 = GTID_GAPLOG_KEYS_BUILDER_INIT;
+        gtidGaplogInsert(gaplog, uuid1, 11, gtidGaplogKeysBuild(&builder1));
+        gtidGaplogInsert(gaplog, uuid2, 22, gtidGaplogKeysBuild(&builder2));
+        decrRefCount(uuid1);
+        decrRefCount(uuid2);
 
-        gtidGaplog *gap_log = gtidGaplogNew();
-
-        /* add uuid-1: [1-3, 10-12] */
-        uuidSet *us1 = uuidSetNew("uuid-1", 6);
-        uuidSetAdd(us1, 1, 3);
-        uuidSetAdd(us1, 10, 12);
-        listAddNodeTail(gap_log->history, us1);
-
-        /* add uuid-2: [100-101] */
-        uuidSet *us2 = uuidSetNew("uuid-2", 6);
-        uuidSetAdd(us2, 100, 101);
-        listAddNodeTail(gap_log->history, us2);
-
-        /*  history iterator */
-        gtidGaplogHistoryIterator iter;
-        gtidGaplogInitHistoryIterator(&iter, gap_log, 0);
-
-        const char *uuid;
-        size_t uuid_len;
-
-        /* uuid-1: gno=1 */
-        gno_t gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 1);
-        test_assert(uuid_len == 6);
-        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
-
-        /* uuid-1: gno=2 */
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 2);
-        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
-
-        /* uuid-1: gno=3 */
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 3);
-        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
-
-        /* uuid-1: gno=10 (interval) */
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 10);
-        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
-
-        /* uuid-1: gno=11 */
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 11);
-
-        /* uuid-1: gno=12 */
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 12);
-
-        /* uuid-2: gno=100 (uuidSet) */
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 100);
-        test_assert(uuid_len == 6);
-        test_assert(memcmp(uuid, "uuid-2", 6) == 0);
-
-        /* uuid-2: gno=101 */
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 101);
-
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 0);
-        test_assert(uuid == NULL);
-
-        gtidGaplogDeinitHistoryIterator(&iter);
-
-        gtidGaplogInitHistoryIterator(&iter, gap_log, 4);
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 11);
-        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
-        gtidGaplogDeinitHistoryIterator(&iter);
-
-        gtidGaplogRelease(gap_log);
-        zfree(gap_log);
+        test_assert(gtidGaplogSize(gaplog) == 2);
+        gtidGaplogDataIterator iter;
+        gtidGaplogInitDataIterator(&iter, gaplog, 0);
+        gtidGaplogNode *node = gtidGaplogDataNext(&iter);
+        test_assert(node != NULL && node->gno == 11 && !strcmp(node->uuid->ptr, "uuid-1"));
+        node = gtidGaplogDataNext(&iter);
+        test_assert(node != NULL && node->gno == 22 && !strcmp(node->uuid->ptr, "uuid-2"));
+        test_assert(gtidGaplogDataNext(&iter) == NULL);
+        gtidGaplogDeinitDataIterator(&iter);
+        gtidGaplogRelease(gaplog);
     }
 
-    TEST("gtid - gapLog history iterator Seek by index") {
-        gtidGaplog *gap_log = gtidGaplogNew();
-
-        uuidSet *us1 = uuidSetNew("uuid-1", 6);
-        uuidSetAdd(us1, 1, 3);
-        uuidSetAdd(us1, 10, 12);
-        listAddNodeTail(gap_log->history, us1);
-
-        uuidSet *us2 = uuidSetNew("uuid-2", 6);
-        uuidSetAdd(us2, 100, 101);
-        listAddNodeTail(gap_log->history, us2);
-
-        const char *uuid;
-        size_t uuid_len;
-
-        gtidGaplogHistoryIterator iter;
-        gtidGaplogInitHistoryIterator(&iter, gap_log, 0);
-        gno_t gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 1);
-        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
-        gtidGaplogDeinitHistoryIterator(&iter);
-
-        gtidGaplogInitHistoryIterator(&iter, gap_log, 4);
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 11);
-        test_assert(memcmp(uuid, "uuid-1", 6) == 0);
-        gtidGaplogDeinitHistoryIterator(&iter);
-
-        gtidGaplogInitHistoryIterator(&iter, gap_log, 6);
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 100);
-        test_assert(memcmp(uuid, "uuid-2", 6) == 0);
-        gtidGaplogDeinitHistoryIterator(&iter);
-
-        gtidGaplogInitHistoryIterator(&iter, gap_log, 7);
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 101);
-        test_assert(memcmp(uuid, "uuid-2", 6) == 0);
-        gtidGaplogDeinitHistoryIterator(&iter);
-
-        gtidGaplogInitHistoryIterator(&iter, gap_log, 8);
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 0);
-        test_assert(uuid == NULL);
-        gtidGaplogDeinitHistoryIterator(&iter);
-
-        gtidGaplogInitHistoryIterator(&iter, gap_log, 0);
-        gno = gtidGaplogHistoryNext(&iter, &uuid, &uuid_len);
-        test_assert(gno == 1);
-        gtidGaplogDeinitHistoryIterator(&iter);
-
-        gtidGaplogRelease(gap_log);
-        zfree(gap_log);
-    }
-
-    TEST("gtid - gapLog trim basic") {
-        gtidGaplog *gap_log = gtidGaplogNew();
-        sds uuid = sdsnew("uuid-A");
-
-        /* add key (gno=2) */
-        {
+    TEST("gtid - gapLog overwrites oldest entry after wrap") {
+        gtidGaplog *gaplog = gtidGaplogNew(3);
+        for (gno_t gno = 1; gno <= 4; gno++) {
+            char uuid_buf[32];
+            int uuid_len = snprintf(uuid_buf, sizeof(uuid_buf), "%lld", (long long)gno);
+            robj *uuid = createStringObject(uuid_buf, uuid_len);
             gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
-            gtidGaplogKeysPrepareBuilder(&builder, 2);
-            sds k1 = sdsnew("trimkey1");
-            sds k2 = sdsnew("trimkey2");
-            builder.keys_infos[builder.numkeys++] =
-                gtidGaplogKeyNew(0, OBJ_STRING, k1, NULL, 0);
-            builder.keys_infos[builder.numkeys++] =
-                gtidGaplogKeyNew(0, OBJ_STRING, k2, NULL, 0);
-            gtidGaplogKeys *keys = gtidGaplogKeysBuild(&builder);
-            gtidGaplogDeinitKeysBuilder(&builder);
-
-            int ret = gtidGaplogInsert(gap_log, uuid, 2, keys);
-            test_assert(ret == 1);
+            gtidGaplogInsert(gaplog, uuid, gno, gtidGaplogKeysBuild(&builder));
+            decrRefCount(uuid);
         }
 
-        test_assert(gtidGaplogSize(gap_log) == 1);
+        test_assert(gtidGaplogSize(gaplog) == 3);
+        gtidGaplogDataIterator iter;
+        gtidGaplogInitDataIterator(&iter, gaplog, 0);
+        for (gno_t expected = 2; expected <= 4; expected++) {
+            gtidGaplogNode *node = gtidGaplogDataNext(&iter);
+            long long uuid_gno;
+            test_assert(node != NULL && node->gno == expected);
+            test_assert(getLongLongFromObject(node->uuid, &uuid_gno) == C_OK && uuid_gno == expected);
+        }
+        test_assert(gtidGaplogDataNext(&iter) == NULL);
+        gtidGaplogDeinitDataIterator(&iter);
+        gtidGaplogRelease(gaplog);
+    }
 
-        int trimmed = gtidGaplogTrim(gap_log, 1);
-        test_assert(trimmed == 1);
-        test_assert(gtidGaplogSize(gap_log) == 0);
-        test_assert(listLength(gap_log->history) == 0);
+    TEST("gtid - gapLog iterator seek honors end boundary") {
+        gtidGaplog *gaplog = gtidGaplogNew(3);
+        for (gno_t gno = 1; gno <= 3; gno++) {
+            robj *uuid = createStringObject("uuid", 4);
+            gtidGaplogKeysBuilder builder = GTID_GAPLOG_KEYS_BUILDER_INIT;
+            gtidGaplogInsert(gaplog, uuid, gno, gtidGaplogKeysBuild(&builder));
+            decrRefCount(uuid);
+        }
 
-        sdsfree(uuid);
-        gtidGaplogRelease(gap_log);
+        gtidGaplogDataIterator iter;
+        gtidGaplogInitDataIterator(&iter, gaplog, 0);
+        gtidGaplogDataIteratorSeek(&iter, 1);
+        gtidGaplogNode *node = gtidGaplogDataNext(&iter);
+        test_assert(node != NULL && node->gno == 2);
+        gtidGaplogDataIteratorSeek(&iter, gtidGaplogSize(gaplog));
+        test_assert(gtidGaplogDataNext(&iter) == NULL);
+        gtidGaplogDeinitDataIterator(&iter);
+        gtidGaplogRelease(gaplog);
+    }
+
+    TEST("gtid - gapLog GetAll returns correct gtid set") {
+        gtidGaplog *gaplog = gtidGaplogNew(10);
+
+        gtidSet *all = gtidGaplogGetAll(gaplog);
+        test_assert(gtidSetCount(all) == 0);
+
+        robj *uid1 = createStringObject("uid-a", 5);
+        robj *uid2 = createStringObject("uid-b", 5);
+        gtidGaplogKeysBuilder b1 = GTID_GAPLOG_KEYS_BUILDER_INIT;
+        gtidGaplogInsert(gaplog, uid1, 1, gtidGaplogKeysBuild(&b1));
+        gtidGaplogKeysBuilder b2 = GTID_GAPLOG_KEYS_BUILDER_INIT;
+        gtidGaplogInsert(gaplog, uid1, 2, gtidGaplogKeysBuild(&b2));
+        gtidGaplogKeysBuilder b3 = GTID_GAPLOG_KEYS_BUILDER_INIT;
+        gtidGaplogInsert(gaplog, uid2, 10, gtidGaplogKeysBuild(&b3));
+
+        all = gtidGaplogGetAll(gaplog);
+        test_assert(gtidSetCount(all) == 3);
+        test_assert(gtidSetContains(all, "uid-a", 5, 1));
+        test_assert(gtidSetContains(all, "uid-a", 5, 2));
+        test_assert(gtidSetContains(all, "uid-b", 5, 10));
+
+        decrRefCount(uid1);
+        decrRefCount(uid2);
+        gtidGaplogRelease(gaplog);
     }
 
     return error;

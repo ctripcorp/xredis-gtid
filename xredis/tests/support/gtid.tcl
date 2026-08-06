@@ -156,12 +156,16 @@ proc gaplog_get_key_type {client key} {
     if {$gaplog_len == 0} { return "" }
     set list_result [$client GTIDX GAPLOG LIST 0 $gaplog_len]
     foreach entry $list_result {
-        set keys [lindex $entry 2]
-        foreach key_entry $keys {
-            set kname [lindex $key_entry 1]
-            set ktype [lindex $key_entry 2]
-            if {$kname == $key} {
-                return $ktype
+        set uuid [lindex $entry 0]
+        set body [lindex $entry 1]
+        for {set j 0} {$j < [llength $body]} {incr j 2} {
+            set keys [lindex $body [expr {$j + 1}]]
+            foreach key_entry $keys {
+                set kname [lindex $key_entry 1]
+                set ktype [lindex $key_entry 2]
+                if {$kname == $key} {
+                    return $ktype
+                }
             }
         }
     }
@@ -174,15 +178,21 @@ proc gaplog_get_key_type_debug {client key} {
     puts "gaplog entries: $gaplog_len"
     set idx 0
     foreach entry $list_result {
-        set keys [lindex $entry 2]
-        puts "entry $idx: [lindex $entry 0] gno=[lindex $entry 1] nkeys=[llength $keys]"
-        foreach key_entry $keys {
-            set kname [lindex $key_entry 1]
-            set ktype [lindex $key_entry 2]
-            puts "  key: '$kname' type: '$ktype'"
-            if {$kname == $key} {
-                puts "  -> MATCHED"
-                return $ktype
+        set uuid [lindex $entry 0]
+        set body [lindex $entry 1]
+        puts "entry $idx: uuid=$uuid ngroups=[expr {[llength $body] / 2}]"
+        for {set j 0} {$j < [llength $body]} {incr j 2} {
+            set gno [lindex $body $j]
+            set keys [lindex $body [expr {$j + 1}]]
+            puts "  gno=$gno nkeys=[llength $keys]"
+            foreach key_entry $keys {
+                set kname [lindex $key_entry 1]
+                set ktype [lindex $key_entry 2]
+                puts "    key: '$kname' type: '$ktype'"
+                if {$kname == $key} {
+                    puts "    -> MATCHED"
+                    return $ktype
+                }
             }
         }
         incr idx

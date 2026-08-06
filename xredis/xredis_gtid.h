@@ -278,7 +278,6 @@ typedef struct gtidGaplogKeys {
 } gtidGaplogKeys;
 
 #define GTID_GAPLOG_MAX_KEYS_BUFFER 256
-#define GTID_GAPLOG_HISTORY_MAX_COUNT 100
 typedef struct gtidGaplogKeysBuilder {
   gtidGaplogKey* cache[GTID_GAPLOG_MAX_KEYS_BUFFER];
   gtidGaplogKey** keys_infos;
@@ -293,52 +292,44 @@ void gtidGaplogKeysBuilderAddFromCmd(gtidGaplogKeysBuilder* builder, int dbid, r
 
 int cmdGetKeyType(struct redisCommand *cmd);
 
+typedef struct gtidGaplogNode {
+  robj* uuid; /* shard uuid */
+  gno_t gno;
+  gtidGaplogKeys* keys;
+} gtidGaplogNode;
+
+
 typedef struct gtidGaplog {
-  dict* data;           //dict<uuid, skiplist<gtidGaplogKey>>
-  list* history;   //list<uuidSet>
-  size_t size;  
+  gtidGaplogNode* data; /* array size is server.gtid_xsync_max_gap */
+  size_t index; /* first index */
+  size_t len;
+  size_t capacity; /* capacity of data array */
+  gtidSet* all;
 } gtidGaplog;
 
-gtidGaplog* gtidGaplogNew();
-void gtidGaplogReset(gtidGaplog* gtid_gap_log);
+gtidGaplog* gtidGaplogNew(size_t capacity);
 void gtidGaplogRelease(gtidGaplog* gaplog);
-int gtidGaplogTrim(gtidGaplog* log ,size_t size);
+void gtidGaplogResetDataSize(gtidGaplog* gaplog, size_t new_size);
 
-int gtidGaplogInsert(gtidGaplog* gaplog, sds uuid, gno_t gno, gtidGaplogKeys* keys);
-int gtidGaplogDeleteRange(gtidGaplog* gaplog, sds uuid, gno_t start_gno, gno_t end_gno); 
-typedef void (gtidGaplogQueryRangeCallbackFn)(gno_t gno, gtidGaplogKeys* keys, void* ctx);
-int gtidGaplogQueryRange(gtidGaplog* gaplog, sds uuid, gno_t start_gno, gno_t end_gno,
-                         gtidGaplogQueryRangeCallbackFn callback, void* ctx);
+int gtidGaplogInsert(gtidGaplog* gaplog, robj* uuid, gno_t gno, gtidGaplogKeys* keys);
 size_t gtidGaplogSize(gtidGaplog* gaplog);
-typedef void (gtidGaplogListCallbackFn)(const char* uuid, size_t uuid_len, gno_t gno, 
+typedef void (gtidGaplogListCallbackFn)(robj* uuid, gno_t gno, 
                                     gtidGaplogKeys* keys, void* ctx);
 int gtidGaplogList(gtidGaplog* gaplog, long long start_idx, long long count,
                    gtidGaplogListCallbackFn callback, 
                    void* ctx);
+gtidSet* gtidGaplogGetAll(gtidGaplog* gaplog);
+
 
 typedef struct gtidGaplogDataIterator {
-  skiplistIterator sl_iter;
+    gtidGaplog* gaplog;
+    size_t index;
 } gtidGaplogDataIterator;
-void gtidGaplogDataInitIterator(gtidGaplogDataIterator *iter, skiplist *sl, gno_t start_gno);
-void gtidGaplogDeinitDataIterator(gtidGaplogDataIterator *iter);
-void gtidGaplogDataIteratorSeek(gtidGaplogDataIterator *iter, gno_t gno);
-gno_t gtidGaplogDataGetGno(gtidGaplogDataIterator* iter);
-gtidGaplogKeys* gtidGaplogDataNext(gtidGaplogDataIterator* iterator);
-
-
-typedef struct gtidGaplogHistoryIterator {
-    list* history;                /* gaplog->history list, for re-seek from head */
-    listNode* list_node;          /* current uuidSet node in history list */
-    gtidIntervalNode* interval_node;  /* current interval node within uuidSet */
-    gno_t next_gno;                   /* next gno to return */
-
-} gtidGaplogHistoryIterator;
-void gtidGaplogInitHistoryIterator(gtidGaplogHistoryIterator* iter,
-                                    gtidGaplog* gaplog, long long index);
-gno_t gtidGaplogHistoryNext(gtidGaplogHistoryIterator* iter,
-                             const char** uuid, size_t* uuid_len);
-void gtidGaplogHistoryIteratorSeek(gtidGaplogHistoryIterator* iter, long long index);
-void gtidGaplogDeinitHistoryIterator(gtidGaplogHistoryIterator* iter);
+void gtidGaplogInitDataIterator(gtidGaplogDataIterator* iter,
+                                    gtidGaplog* gaplog, size_t index);
+gtidGaplogNode* gtidGaplogDataNext(gtidGaplogDataIterator* iter);
+void gtidGaplogDataIteratorSeek(gtidGaplogDataIterator* iter, size_t index);
+void gtidGaplogDeinitDataIterator(gtidGaplogDataIterator* iter);
 
 /* readBacklogIterator: iterate commands from replication backlog with querybuf reuse.
  * Use Init/SeekTo/ParseNext/Deinit. backlog == -1 means "not seeked yet".

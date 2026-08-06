@@ -32,31 +32,41 @@
 #include "xredis_gtid_adaptation_version.h"
 
 
-typedef struct {
-    client *c;
-    long long count;
-} QueryRangeContext;
-
-static void queryRangeCallback(gno_t gno, gtidGaplogKeys* keys, void* ctx) {
-    QueryRangeContext *qctx = (QueryRangeContext*)ctx;
-    addReplyLongLong(qctx->c, gno);
-    addReplyGtidGaplogKeys(qctx->c, keys);
-    qctx->count++;
-}
 
 typedef struct {
     client *c;
-    int nreply;
+    long nreply;
+    robj* last_uuid;
+    void* last_uuid_deferred_len;
+    long last_uuid_nreply;
 } ListContext;
 
-static void listCallback(const char* uuid, size_t uuid_len, gno_t gno,
+static void listCallback(robj* uuid, gno_t gno,
                          gtidGaplogKeys* keys, void* ctx) {
     ListContext *lctx = (ListContext*)ctx;
-    addReplyArrayLen(lctx->c, 3);
-    addReplyBulkCBuffer(lctx->c, uuid, uuid_len);
+    serverAssert(uuid != NULL);
+    if (lctx->last_uuid == NULL) {
+        serverAssert(lctx->nreply == 0);
+        addReplyArrayLen(lctx->c, 2);
+        addReplyBulkCBuffer(lctx->c, uuid->ptr, sdslen(uuid->ptr));
+        lctx->last_uuid_deferred_len = addReplyDeferredLen(lctx->c);
+        lctx->nreply += 1;
+        lctx->last_uuid = uuid;
+        lctx->last_uuid_nreply = 0;
+
+    } else if (lctx->last_uuid != uuid) {
+        setDeferredArrayLen(lctx->c, lctx->last_uuid_deferred_len, lctx->last_uuid_nreply);
+        addReplyArrayLen(lctx->c, 2);
+        addReplyBulkCBuffer(lctx->c, uuid->ptr, sdslen(uuid->ptr));
+        lctx->last_uuid_deferred_len = addReplyDeferredLen(lctx->c);
+        lctx->nreply += 1;
+        lctx->last_uuid = uuid;
+        lctx->last_uuid_nreply = 0;
+        
+    }
     addReplyLongLong(lctx->c, gno);
     addReplyGtidGaplogKeys(lctx->c, keys);
-    lctx->nreply++;
+    lctx->last_uuid_nreply += 2;
 }
 int isGtidExecCommand(client* c) {
     return c->cmd->proc == gtidCommand && c->argc > GTID_COMMAN_ARGC &&
@@ -403,7 +413,7 @@ sds genGtidInfoString(sds info) {
     if (server.gtid_gap_log != NULL) {
         info = sdscatprintf(info,
                 "gtid_gaplog_entries:%ld\r\n",
-                server.gtid_gap_log->size);
+                gtidGaplogSize(server.gtid_gap_log));
     }
 
     return info;
@@ -452,14 +462,12 @@ void gtidxCommand(client *c) {
             "    SET uuid.interested to * or ?",
             "GAPLOG LEN",
             "    Get gaplog entries count.",
-            "GAPLOG RANGE <uuid> <start_gno> <end_gno>",
-            "    Query gaplog entries by uuid and gno range.",
-            "GAPLOG DELETERANGE <uuid> <start_gno> <end_gno>",
-            "    Delete gaplog entries by uuid and gno range.",
             "GAPLOG LIST <start_index> <count>",
             "    List gaplog entries by index.",
             "GAPLOG CLEAR",
             "    Clear all gaplog entries.",
+            "GAPLOG ALL",
+            "    Get gtidSet of all gnos stored in gaplog.",
             NULL
         };
         addReplyHelp(c, help);
@@ -632,39 +640,6 @@ void gtidxCommand(client *c) {
     } else if (!strcasecmp(c->argv[1]->ptr,"gaplog") && c->argc >= 3) {
         if (!strcasecmp(c->argv[2]->ptr,"len") && c->argc == 3)  {
             addReplyLongLong(c, gtidGaplogSize(server.gtid_gap_log));
-        } else if (!strcasecmp(c->argv[2]->ptr,"range") && c->argc == 6) {
-            /* GTIDX GAPLOG RANGE <uuid> <start_gno> <end_gno> */
-            sds uuid = c->argv[3]->ptr;
-            long long start_gno, end_gno;
-            if (getLongLongFromObjectOrReply(c, c->argv[4], &start_gno, NULL) != C_OK) return;
-            if (getLongLongFromObjectOrReply(c, c->argv[5], &end_gno, NULL) != C_OK) return;
-            if (start_gno > end_gno) {
-                addReplyError(c, "start gno must be <= end gno");
-                return;
-            }
-
-            QueryRangeContext qctx = {c, 0};
-            void *arraylen = addReplyDeferredLen(c);
-            gtidGaplogQueryRange(server.gtid_gap_log, uuid, start_gno, end_gno, queryRangeCallback, &qctx);
-            setDeferredArrayLen(c, arraylen, qctx.count * 2);
-        } else if (!strcasecmp(c->argv[2]->ptr,"deleterange") && c->argc == 6) {
-            sds uuid = c->argv[3]->ptr;
-            long long start_gno, end_gno;
-            if (getLongLongFromObjectOrReply(c, c->argv[4], &start_gno, NULL) != C_OK) return;
-            if (getLongLongFromObjectOrReply(c, c->argv[5], &end_gno, NULL) != C_OK) return;
-            if (start_gno > end_gno) {
-                addReplyError(c, "start gno must be <= end gno");
-                return;
-            }
-
-            long long deleted = gtidGaplogDeleteRange(server.gtid_gap_log, uuid, start_gno, end_gno);
-
-            if (deleted > 100) {
-                serverLog(LL_NOTICE,
-                    "[gaplog] deleterange deleted %lld entries for uuid %s range %lld-%lld",
-                    deleted, uuid, start_gno, end_gno);
-            }
-            addReplyLongLong(c, deleted);
         } else if (!strcasecmp(c->argv[2]->ptr,"list") && c->argc == 5) {
             long long start_idx, count;
             if (getLongLongFromObjectOrReply(c, c->argv[3], &start_idx, NULL) != C_OK) return;
@@ -673,20 +648,40 @@ void gtidxCommand(client *c) {
                 addReplyError(c, "start must be >= 0 and count must be > 0");
                 return;
             }
-            if (count > GTID_GAPLOG_HISTORY_MAX_COUNT) {
-                addReplyErrorFormat(c, "count must be <= %d", GTID_GAPLOG_HISTORY_MAX_COUNT);
-                return;
-            }
 
-            ListContext lctx = {c, 0};
+            ListContext lctx = {c, 0, NULL, NULL, 0};
+            /*
+            [
+                [
+                    uuid, 
+                    [
+                        gno, [dbid, key, type, [subkey]],
+                        gno, [dbid, key, type, [subkey]],
+                        ...
+                    ], 
+                ]
+                ...
+            ]
+            */
             void *replylen = addReplyDeferredLen(c);
 
             gtidGaplogList(server.gtid_gap_log, start_idx, count, listCallback, &lctx);
-
+            /* end */
+            if (lctx.last_uuid_deferred_len != NULL) {
+                setDeferredArrayLen(c , lctx.last_uuid_deferred_len, lctx.last_uuid_nreply);
+            }
             setDeferredArrayLen(c, replylen, lctx.nreply);
         } else if (!strcasecmp(c->argv[2]->ptr,"clear") && c->argc == 3) {
-            gtidGaplogReset(server.gtid_gap_log);
+            gtidGaplogRelease(server.gtid_gap_log);
+            server.gtid_gap_log = gtidGaplogNew(server.gtid_xsync_max_gap);
             addReply(c,shared.ok);
+        } else if (!strcasecmp(c->argv[2]->ptr,"all") && c->argc == 3) {
+            gtidSet *gtid_set = gtidGaplogGetAll(server.gtid_gap_log);
+            size_t maxlen = gtidSetEstimatedEncodeBufferSize(gtid_set);
+            char *buf = zmalloc(maxlen);
+            size_t len = gtidSetEncode(buf, maxlen, gtid_set);
+            addReplyBulkCBuffer(c, buf, len);
+            zfree(buf);
         } else {
             addReplySubcommandSyntaxError(c);
         }
