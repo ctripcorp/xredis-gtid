@@ -204,8 +204,8 @@ proc assert_repl_stream_aligned {master slave} {
     }
 }
 
-start_server {tags {"xsync"} overrides {gtid-enabled yes}} {
-    start_server {overrides {gtid-enabled yes}} {
+start_server {tags {"xsync"} overrides {gtid-enabled yes gtid-xsync-max-gap 10000}} {
+    start_server {overrides {gtid-enabled yes gtid-xsync-max-gap 10000}} {
     set master [srv -1 client]
     set master_host [srv -1 host]
     set master_port [srv -1 port]
