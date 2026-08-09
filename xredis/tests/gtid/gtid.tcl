@@ -604,10 +604,10 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
                 "brpoplpush"    { set args [list $cmd src_key dst_key 1] }
                 "blpop"         { set args [list $cmd list_key 1] }
                 "brpop"         { set args [list $cmd list_key 1] }
-                "blmpop"        { set args [list $cmd list_key 2 LEFT 1] }
+                "blmpop"        { set args [list $cmd 0 1 list_key LEFT] }
                 "bzpopmin"      { set args [list $cmd zset_key 1] }
                 "bzpopmax"      { set args [list $cmd zset_key 1] }
-                "bzmpop"        { set args [list $cmd hash_key 2 MIN 1] }
+                "bzmpop"        { set args [list $cmd 0 1 hash_key MIN] }
                 "zmpop"         { set args [list $cmd hash_key 2 MIN] }
                 "spop"          { set args [list $cmd spop_key] }
                 default         { fail "unexpected command $cmd" }
