@@ -354,6 +354,7 @@ sds genGtidInfoString(sds info) {
 
     sds gtid_executed_repr = gtidSetDump(server.gtid_executed);
     sds gtid_lost_repr = gtidSetDump(server.gtid_lost);
+    sds gtid_gaplog_repr = gtidSetDump(gtidGaplogGetAll(server.gtid_gap_log));
 
     const char *master_uuid = getMasterUuid(NULL);
     info  = sdscatprintf(info,
@@ -377,7 +378,9 @@ sds genGtidInfoString(sds info) {
             "gtid_uuid_interested:%s\r\n"
             "gtid_xsync_fullresync_indicator:%lld\r\n"
             "gtid_executed_cmd_count:%lld\r\n"
-            "gtid_ignored_cmd_count:%lld\r\n",
+            "gtid_ignored_cmd_count:%lld\r\n"
+            "gtid_gaplog:%s\r\n"
+            "gtid_gaplog_entries:%ld\r\n",
             server.uuid,
             master_uuid,
             gtid_set_repr,
@@ -398,12 +401,15 @@ sds genGtidInfoString(sds info) {
             server.gtid_uuid_interested,
             server.gtid_xsync_fullresync_indicator,
             server.gtid_executed_cmd_count,
-            server.gtid_ignored_cmd_count);
+            server.gtid_ignored_cmd_count,
+            gtid_gaplog_repr,
+            gtidGaplogSize(server.gtid_gap_log)
+        );
 
     sdsfree(gtid_set_repr);
     sdsfree(gtid_executed_repr);
     sdsfree(gtid_lost_repr);
-
+    sdsfree(gtid_gaplog_repr);
     info = sdscatprintf(info,"gtid_sync_stat:");
     for (int i = 0; i < GTID_SYNC_TYPES; i++) {
         long long count = server.gtid_sync_stat[i];
@@ -414,12 +420,6 @@ sds genGtidInfoString(sds info) {
         }
     }
     info = sdscatprintf(info,"\r\n");
-
-    if (server.gtid_gap_log != NULL) {
-        info = sdscatprintf(info,
-                "gtid_gaplog_entries:%ld\r\n",
-                gtidGaplogSize(server.gtid_gap_log));
-    }
 
     return info;
 }
@@ -465,14 +465,10 @@ void gtidxCommand(client *c) {
             "    Locate xsync continue position",
             "UUID-INTRESTED SET <*|?>",
             "    SET uuid.interested to * or ?",
-            "GAPLOG LEN",
-            "    Get gaplog entries count.",
             "GAPLOG LIST <start_index> <count>",
             "    List gaplog entries by index.",
             "GAPLOG CLEAR",
             "    Clear all gaplog entries.",
-            "GAPLOG ALL",
-            "    Get gtidSet of all gnos stored in gaplog.",
             NULL
         };
         addReplyHelp(c, help);
@@ -643,9 +639,7 @@ void gtidxCommand(client *c) {
             addReplyError(c,"Syntax error");
         }
     } else if (!strcasecmp(c->argv[1]->ptr,"gaplog") && c->argc >= 3) {
-        if (!strcasecmp(c->argv[2]->ptr,"len") && c->argc == 3)  {
-            addReplyLongLong(c, gtidGaplogSize(server.gtid_gap_log));
-        } else if (!strcasecmp(c->argv[2]->ptr,"list") && c->argc == 5) {
+        if (!strcasecmp(c->argv[2]->ptr,"list") && c->argc == 5) {
             long long start_idx, count;
             if (getLongLongFromObjectOrReply(c, c->argv[3], &start_idx, NULL) != C_OK) return;
             if (getLongLongFromObjectOrReply(c, c->argv[4], &count, NULL) != C_OK) return;
@@ -680,13 +674,6 @@ void gtidxCommand(client *c) {
             gtidGaplogRelease(server.gtid_gap_log);
             server.gtid_gap_log = gtidGaplogNew(server.gtid_xsync_max_gap);
             addReply(c,shared.ok);
-        } else if (!strcasecmp(c->argv[2]->ptr,"all") && c->argc == 3) {
-            gtidSet *gtid_set = gtidGaplogGetAll(server.gtid_gap_log);
-            size_t maxlen = gtidSetEstimatedEncodeBufferSize(gtid_set);
-            char *buf = zmalloc(maxlen);
-            size_t len = gtidSetEncode(buf, maxlen, gtid_set);
-            addReplyBulkCBuffer(c, buf, len);
-            zfree(buf);
         } else {
             addReplySubcommandSyntaxError(c);
         }
