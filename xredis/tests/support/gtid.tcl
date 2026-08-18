@@ -93,31 +93,6 @@ proc get_gaplog_entries {client} {
 }
 
 proc get_slave_gtid_uuid {client} {
-    set seq [$client GTIDX seq gtid.set]
-    set parts [split $seq ","]
-    if {[llength $parts] >= 2} {
-        set uuid_gno [lindex $parts 1]
-        set uuid [lindex [split $uuid_gno ":"] 0]
-        return $uuid
-    } elseif {[llength $parts] == 1} {
-        set uuid_gno [lindex $parts 0]
-        set uuid [lindex [split $uuid_gno ":"] 0]
-        return $uuid
-    }
-    return ""
-}
-
-
-
-proc get_info_property {r section line property} {
-    set str [$r info $section]
-    if {[regexp ".*${line}:\[^\r\n\]*${property}=(\[^,\r\n\]*).*" $str match submatch]} {
-        return $submatch
-    }
-    return ""
-}
-
-proc get_slave_gtid_uuid {client} {
     set info [$client INFO gtid]
     foreach line [split $info "\r\n"] {
         if {[string match "gtid_uuid:*" $line]} {
@@ -127,17 +102,17 @@ proc get_slave_gtid_uuid {client} {
     return ""
 }
 
-
-proc get_gaplog_entries {client} {
-    set len [$client GTIDX GAPLOG LEN]
-    return $len
+proc get_info_property {r section line property} {
+    set str [$r info $section]
+    if {[regexp ".*${line}:\[^\r\n\]*${property}=(\[^,\r\n\]*).*" $str match submatch]} {
+        return $submatch
+    }
+    return ""
 }
-
 
 proc get_uuid {client} {
     return [get_slave_gtid_uuid $client]
 }
-
 proc get_xsync_continue_stat {S} { return [get_info_property $S gtid gtid_sync_stat xsync_xcontinue] }
 proc wait_xsync_continue_stat {S o} {
     wait_for_condition 50 100 { [get_xsync_continue_stat $S] > $o } else {
@@ -149,10 +124,26 @@ proc replicaof_xcontinue {S Mh Mp} {
     set o [get_xsync_continue_stat $S]; $S replicaof $Mh $Mp; wait_for_sync $S
     wait_xsync_continue_stat $S $o; after 200
 }
-
-proc gaploglen {c} { return [$c GTIDX GAPLOG LEN] }
+proc gaploglen {c} {
+    return [get_gaplog_entries $c]
+}
+proc get_gaplog_gtidset {client} {
+    set info [$client INFO gtid]
+    foreach line [split $info "\r\n"] {
+        if {[string match "gtid_gaplog:*" $line]} {
+            set raw [string range $line 12 end]
+            if {[string length $raw] >= 2 \
+                    && [string index $raw 0] eq "\"" \
+                    && [string index $raw end] eq "\""} {
+                return [string range $raw 1 end-1]
+            }
+            return $raw
+        }
+    }
+    return ""
+}
 proc gaplog_get_key_type {client key} {
-    set gaplog_len [$client GTIDX GAPLOG LEN]
+    set gaplog_len [gaploglen $client]
     if {$gaplog_len == 0} { return "" }
     set list_result [$client GTIDX GAPLOG LIST 0 $gaplog_len]
     foreach entry $list_result {
@@ -172,7 +163,7 @@ proc gaplog_get_key_type {client key} {
     return ""
 }
 proc gaplog_get_key_type_debug {client key} {
-    set gaplog_len [$client GTIDX GAPLOG LEN]
+    set gaplog_len [gaploglen $client]
     if {$gaplog_len == 0} { puts "gaplog empty"; return "" }
     set list_result [$client GTIDX GAPLOG LIST 0 $gaplog_len]
     puts "gaplog entries: $gaplog_len"

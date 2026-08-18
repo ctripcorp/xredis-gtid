@@ -2,27 +2,25 @@
 
 
 start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled yes}} {
-    test "GAPLOG-CMD-001: GAPLOG LEN - empty gaplog returns 0" {
-        set len [r GTIDX GAPLOG LEN]
-        assert {$len == 0}
+    test "GAPLOG-CMD-001: INFO GTID - gtid_gaplog_entries is 0 when gaplog empty" {
+        assert_equal [get_gaplog_entries r] 0
+        set info [r INFO gtid]
+        assert_match "*gtid_gaplog_entries:0*" $info
+        # Empty gtidSet renders as a bare empty value in INFO (no quote wrapping);
+        # do NOT match with "*gtid_gaplog:\"\"*".
+        assert_equal [get_gaplog_gtidset r] ""
     }
 
-    test "GAPLOG-CMD-002: GAPLOG CLEAR - clears all entries" {
-        set result [r GTIDX GAPLOG CLEAR]
-        assert_equal $result "OK"
-
-        set len [r GTIDX GAPLOG LEN]
-        assert {$len == 0}
+    test "GAPLOG-CMD-002: GAPLOG CLEAR - INFO GTID gtid_gaplog_entries becomes 0" {
+        assert_equal [r GTIDX GAPLOG CLEAR] "OK"
+        assert_equal [get_gaplog_entries r] 0
+        set info [r INFO gtid]
+        assert_match "*gtid_gaplog_entries:0*" $info
     }
 }
 
 
 start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled yes}} {
-    test "GAPLOG-CMD-009: GAPLOG LEN - wrong args count error" {
-        catch {r GTIDX GAPLOG LEN "extra-arg"} err
-        assert_match "*wrong*" $err
-    }
-
     test "GAPLOG-CMD-012: GAPLOG invalid subcommand error" {
         catch {r GTIDX GAPLOG INVALID} err
         assert_match "*subcommand*" $err
@@ -30,20 +28,31 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 }
 
 start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled yes}} {
-    test "GAPLOG-CMD-013: GTIDX HELP contains GAPLOG commands" {
+    test "GAPLOG-CMD-013: GTIDX HELP contains remaining GAPLOG commands" {
         set help [r GTIDX HELP]
-        assert_match "*GAPLOG LEN*" $help
         assert_match "*GAPLOG LIST*" $help
-        assert_match "*GAPLOG ALL*" $help
         assert_match "*GAPLOG CLEAR*" $help
+        assert_no_match "*GAPLOG LEN*" $help
+        assert_no_match "*GAPLOG ALL*" $help
     }
 }
-
 start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled yes}} {
-    test "GAPLOG-CMD-014: INFO GTID contains gaplog stats" {
+    test "GAPLOG-CMD-014: INFO GTID contains gaplog stats fields" {
         r GTIDX GAPLOG CLEAR
         set info [r INFO gtid]
         assert_match "*gtid_gaplog_entries:0*" $info
+        # Empty gtidSet renders as a bare empty value in INFO (no quote wrapping);
+        # do NOT match with "*gtid_gaplog:\"\"*".
+        assert_equal [get_gaplog_gtidset r] ""
+    }
+
+    test "GAPLOG-CMD-015: INFO GTID gtid_gaplog_entries reflects CLEAR effect" {
+        r GTIDX GAPLOG CLEAR
+        set info [r INFO gtid]
+        assert_match "*gtid_gaplog_entries:0*" $info
+        # Empty gtidSet renders as a bare empty value in INFO (no quote wrapping);
+        # do NOT match with "*gtid_gaplog:\"\"*".
+        assert_equal [get_gaplog_gtidset r] ""
     }
 }
 
@@ -142,7 +151,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             }
             assert {$uuid != ""}
 
-            set page_count [$S GTIDX GAPLOG LEN]
+            set page_count [gaploglen $S]
             assert {$page_count > 0}
 
             set list_result [$S GTIDX GAPLOG LIST 0 $page_count]
@@ -193,13 +202,13 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
         }
 
         test "GAPLOG-LIST-007: LIST start_idx out of range returns empty array" {
-            set gaplog_len [$S GTIDX GAPLOG LEN]
+            set gaplog_len [gaploglen $S]
             set result [$S GTIDX GAPLOG LIST $gaplog_len 10]
             assert_equal $result {}
         }
 
         test "GAPLOG-LIST-008: LIST count exceeds remaining entries - truncated" {
-            set gaplog_len [$S GTIDX GAPLOG LEN]
+            set gaplog_len [gaploglen $S]
             set start_idx [expr {$gaplog_len - 2}]
             if {$start_idx < 0} { set start_idx 0 }
             set result [$S GTIDX GAPLOG LIST $start_idx 100]
@@ -213,25 +222,24 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
     start_server {overrides {gtid-enabled yes gtid-gaplog-enabled yes gtid-xsync-max-gap 10000}} {
         set M [srv -1 client]; set Mh [srv -1 host]; set Mp [srv -1 port]; set S [srv 0 client]
 
-        test "GAPLOG-ALL-001: ALL returns empty gtidSet when gaplog empty" {
+        test "GAPLOG-ALL-001: INFO GTID gtid_gaplog is empty when gaplog empty" {
             $S GTIDX GAPLOG CLEAR
-            set result [$S GTIDX GAPLOG ALL]
-            assert_equal $result "" {}
+            assert_equal [get_gaplog_gtidset $S] ""
         }
 
-        test "GAPLOG-ALL-002: ALL returns correct gtidSet encoding" {
+        test "GAPLOG-ALL-002: INFO GTID gtid_gaplog encodes gaplog gnos correctly" {
             $S replicaof $Mh $Mp; wait_for_sync $S
             $M set m_b m_v; wait_for_ofs_sync $S $M
             $S replicaof no one; after 100
             $S set k1 v1; $S set k2 v2; $S set k3 v3
             set su [get_slave_gtid_uuid $S]
             replicaof_xcontinue $S $Mh $Mp
-            set all [$S GTIDX GAPLOG ALL]
+            set all [get_gaplog_gtidset $S]
             assert {[string length $all] > 0}
             assert_match "${su}:*" $all
         }
 
-        test "GAPLOG-ALL-003: ALL gno range covers written gnos" {
+        test "GAPLOG-ALL-003: INFO GTID gtid_gaplog gno range covers written gnos" {
             $S replicaof $Mh $Mp; wait_for_sync $S
             $M set m_b2 m_v; wait_for_ofs_sync $S $M
             $S replicaof no one; after 100
@@ -240,7 +248,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
             set su [get_slave_gtid_uuid $S]
             replicaof_xcontinue $S $Mh $Mp
             set gl [gaploglen $S]
-            set all [$S GTIDX GAPLOG ALL]
+            set all [get_gaplog_gtidset $S]
             set pattern "${su}:"
             set idx [string first $pattern $all]
             assert {$idx >= 0}

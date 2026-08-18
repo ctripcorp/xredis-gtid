@@ -250,11 +250,11 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
 
         $client CONFIG SET gtid-xsync-max-gap 10000
 
-        set len [$client GTIDX GAPLOG LEN]
+        set len [gaploglen $client]
         assert_equal $len 0
 
         $client GTIDX GAPLOG CLEAR
-        set len [$client GTIDX GAPLOG LEN]
+        set len [gaploglen $client]
         assert_equal $len 0
     }
 }
@@ -570,7 +570,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
                 after 200
 
 
-                set b_gaplog_len [$B GTIDX GAPLOG LEN]
+                set b_gaplog_len [gaploglen $B]
                 puts "DEBUG: B gaplog length after reconnect: $b_gaplog_len"
                 assert {$b_gaplog_len >= 2}
 
@@ -597,7 +597,7 @@ start_server {tags {"gaplog"} overrides {gtid-enabled yes gtid-gaplog-enabled ye
                 after 200
 
 
-                set c_gaplog_len [$C GTIDX GAPLOG LEN]
+                set c_gaplog_len [gaploglen $C]
                 puts "DEBUG: C gaplog length after skip-level switch: $c_gaplog_len"
 
 
@@ -656,7 +656,7 @@ proc run_extreme_test {maxgap backlog data_multiplier} {
                 wait_for_sync $S
                 after 1000
 
-                set gaplog_len [$S GTIDX GAPLOG LEN]
+                set gaplog_len [gaploglen $S]
                 puts "DEBUG: Gaplog length after reconnect: $gaplog_len"
 
                 assert {$gaplog_len > 0}
@@ -685,7 +685,7 @@ proc run_extreme_test {maxgap backlog data_multiplier} {
                     after 20
                 }
 
-                set gaplog_len [$S GTIDX GAPLOG LEN]
+                set gaplog_len [gaploglen $S]
                 puts "DEBUG: Gaplog length after $total_rapid_switches rapid switches: $gaplog_len"
 
                 assert {$gaplog_len > 0}
