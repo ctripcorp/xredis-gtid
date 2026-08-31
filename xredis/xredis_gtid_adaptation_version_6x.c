@@ -326,6 +326,38 @@ struct redisCommand* gtidGetExecCommand() {
     return server.execCommand;
 }     
 
+/**
+    copy code from 6.x replicationSetupSlaveForFullResync   
+**/
+int replicationSetupSlaveForXFullResync(client *slave, long long offset,build_xfull_protocol_cb buildXfullProtocol) {
+    int buflen;
+
+    slave->psync_initial_offset = offset;
+    slave->replstate = SLAVE_STATE_WAIT_BGSAVE_END;
+    /* We are going to accumulate the incremental changes for this
+     * slave as well. Set slaveseldb to -1 in order to force to re-emit
+     * a SELECT statement in the replication stream. */
+    server.slaveseldb = -1;
+
+    /* Don't send this reply to slaves that approached us with
+     * the old SYNC command. */
+    if (!(slave->flags & CLIENT_PRE_PSYNC)) {
+        sds protocol = buildXfullProtocol(); //get protocol
+        buflen = sdslen(protocol);
+        if (connWrite(slave->conn,protocol, buflen) != buflen) { //send protocol
+            sdsfree(protocol); //free protocol
+            freeClientAsync(slave);
+            return C_ERR;
+        }
+        sdsfree(protocol); //free protocol
+    }
+    return C_OK;
+}
+
+/* 6.2.x has no rdb-channel replication; no-op to keep the shared code compilable. */
+void gtidReplicationSetRdbChannelMainClientId(uint64_t client_id) {
+    UNUSED(client_id);
+}
 
 
 /* test */

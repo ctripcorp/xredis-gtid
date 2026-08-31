@@ -346,6 +346,55 @@ long long gtidBacklogAppendToSds(long long offset, sds *dst, size_t size) {
     return total;
 }
 
+/**
+    copy code from 8.x replicationSetupSlaveForFullResync   
+**/
+int replicationSetupSlaveForXFullResync(client *slave, long long offset, build_xfull_protocol_cb buildXfullProtocol) {
+    int buflen;
+
+    slave->psync_initial_offset = offset;
+    slave->replstate = SLAVE_STATE_WAIT_BGSAVE_END;
+    /* We are going to accumulate the incremental changes for this
+     * slave as well. Set slaveseldb to -1 in order to force to re-emit
+     * a SELECT statement in the replication stream. */
+    server.slaveseldb = -1;
+
+    /* Don't send this reply to slaves that approached us with
+     * the old SYNC command. */
+    if (!(slave->flags & CLIENT_PRE_PSYNC)) {
+        if (slave->flags & CLIENT_REPL_RDB_CHANNEL) {
+            /* This slave is rdbchannel. Find its associated main channel and
+             * change its state so we can deliver replication stream from now
+             * on, in parallel to rdb. */
+            uint64_t id = slave->main_ch_client_id;
+            client *c = lookupClientByID(id);
+            if (c && c->replstate == SLAVE_STATE_WAIT_RDB_CHANNEL) {
+                c->replstate = SLAVE_STATE_SEND_BULK_AND_STREAM;
+                serverLog(LL_NOTICE, "Starting to deliver RDB and replication stream to replica: %s",
+                          replicationGetSlaveName(c));
+            } else {
+                serverLog(LL_WARNING, "Starting to deliver RDB to replica %s"
+                                      " but it has no associated main channel",
+                                      replicationGetSlaveName(slave));
+            }
+        }
+        sds protocol = buildXfullProtocol(); //get protocol
+        buflen = sdslen(protocol);
+        if (connWrite(slave->conn,protocol,buflen) != buflen) {  //send protocol
+            sdsfree(protocol); //free protocol
+            freeClientAsync(slave);
+            return C_ERR;
+        }
+        sdsfree(protocol); //free protocol
+    }
+    return C_OK;
+}
+
+/* Record the rdb-channel main client id negotiated via +RDBCHANNELSYNC into the server. */
+void gtidReplicationSetRdbChannelMainClientId(uint64_t client_id) {
+    server.repl_main_ch_client_id = client_id;
+}
+
 /* test */
 void gtidInitTestEnv() {
     server.repl_buffer_blocks = listCreate();

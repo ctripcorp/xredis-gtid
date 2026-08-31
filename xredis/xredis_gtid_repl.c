@@ -32,58 +32,22 @@
 #include "xredis_gtid_adaptation_version.h"
 
 
-int replicationSetupSlaveForXFullResync(client *slave, long long offset) {
-    int ret = C_OK;
-    sds gtid_lost_repr = NULL, repr = NULL;
+sds buildXfullProtocol() {
+    sds gtid_lost_repr = NULL;
     size_t master_uuid_len = 0;
     const char *master_uuid = getMasterUuid(&master_uuid_len);
-
-    repr = sdsnew("+XFULLRESYNC");
-
     gtid_lost_repr = gtidSetQuoteIfEmpty(gtidSetDump(server.gtid_lost));
-    repr = sdscat(repr," GTID.LOST ");
-    repr = sdscatlen(repr,gtid_lost_repr,sdslen(gtid_lost_repr));
-
-    repr = sdscat(repr," MASTER.UUID ");
-    repr = sdscatlen(repr,master_uuid,master_uuid_len);
-
-    repr = sdscat(repr," REPLID ");
-    repr = sdscat(repr,server.replid);
-
-    repr = sdscat(repr," REPLOFF ");
-    sds reploff = sdsfromlonglong(ctrip_getMasterReploff());
-    repr = sdscatsds(repr,reploff);
-    sdsfree(reploff);
-
-    repr = sdscat(repr, "\r\n");
-
-    slave->psync_initial_offset = offset;
-    slave->replstate = SLAVE_STATE_WAIT_BGSAVE_END;
-    /* We are going to accumulate the incremental changes for this
-     * slave as well. Set slaveseldb to -1 in order to force to re-emit
-     * a SELECT statement in the replication stream. */
-    server.slaveseldb = -1;
-
-    /* Don't send this reply to slaves that approached us with
-     * the old SYNC command. */
-    if (!(slave->flags & CLIENT_PRE_PSYNC)) {
-        if (connWrite(slave->conn,repr,sdslen(repr)) != (int)sdslen(repr)) {
-            freeClientAsync(slave);
-            ret = C_ERR;
-            goto end;
-        }
-    }
-
-end:
-    sdsfree(gtid_lost_repr), sdsfree(repr);
-    return ret;
+    sds result = sdscatprintf(sdsempty(), "+XFULLRESYNC GTID.LOST %s MASTER.UUID %s REPLID %s REPLOFF %lld\r\n",
+                          gtid_lost_repr, master_uuid,server.replid,ctrip_getMasterReploff());
+    sdsfree(gtid_lost_repr);
+    return result;
 }
 
 int ctrip_replicationSetupSlaveForFullResync(client *slave, long long offset) {
     if (server.repl_mode->mode != REPL_MODE_XSYNC)
         return replicationSetupSlaveForFullResync(slave, offset);
     else
-        return replicationSetupSlaveForXFullResync(slave, offset);
+        return replicationSetupSlaveForXFullResync(slave, offset, buildXfullProtocol);
 }
 
 #define GTID_XSYNC_MAX_REPLY_SIZE (64*1024)
@@ -1239,7 +1203,11 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
     }
 
     if (parsed->type == SYNC_REPLY_RDBCHANNELSYNC) {
-        goto by_redis;
+        gtidReplicationSetRdbChannelMainClientId(parsed->rdbchannelsync.client_id);
+        serverLog(LL_NOTICE, "[%s] PSYNC is not possible, initialize RDB channel.",
+                replModeName(server.repl_mode->mode));
+        result = PSYNC_FULLRESYNC_RDBCHANNEL;
+        goto end;
     }
 
     if (server.repl_mode->mode != REPL_MODE_XSYNC) {

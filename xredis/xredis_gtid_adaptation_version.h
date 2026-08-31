@@ -34,10 +34,14 @@ void consumeReplicationBacklogLimitedAddReplyCb(char *p,
 void gtidClearReplStartCmdStreamOnAck(client* c);
 void gtidFreeClientAsync(client *c);
 int gtidMasterTryPartialResynchronization(client* c, long long psync_offset) ;
-
 void feedAppendOnlyFileGtid(struct redisCommand *_cmd, int dictid, robj **argv, int argc);
 void ctrip_replicationFeedSlaves(list* saves,int dictid, robj **argv,
         int argc, const char *uuid, size_t uuid_len, gno_t gno, long long offset);
+typedef sds build_xfull_protocol_cb();
+int replicationSetupSlaveForXFullResync(client *slave, long long offset, 
+        build_xfull_protocol_cb cb);
+/* Record the rdb-channel main client id negotiated via +RDBCHANNELSYNC (8.x impl; no-op in 6.x) */
+void gtidReplicationSetRdbChannelMainClientId(uint64_t client_id);
 
 /* backlog */
 long long gtidBacklogAppendToSds(long long offset, sds *dst, size_t size);
