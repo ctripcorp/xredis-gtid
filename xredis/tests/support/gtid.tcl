@@ -202,7 +202,7 @@ proc dbsize_loadsafe {r varname} {
 }
 
 # Commands whose proc rewrites argv before propagate; must stay in sync with
-# gtidGetRewriteCmdProcs() in xredis_gtid_adaptation_version_{6,8}x.c
+# the CMD_GTID_NON_DETERMINISM flag in src/commands/*.json.
 proc gtid_rewrite_cmd_list_common {} {
     return {expire pexpire expireat setex psetex getset \
         blmove brpoplpush blpop brpop bzpopmin bzpopmax geoadd}
