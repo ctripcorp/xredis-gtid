@@ -1341,15 +1341,12 @@ int ctrip_slaveTryPartialResynchronizationRead(connection *conn, sds reply) {
             result = PSYNC_CONTINUE;
         }
     }
-
+    goto end;
+by_redis:
+    serverAssert(result == PSYNC_BY_REDIS);
 end:
-    sdsfree(reply);
     parsedSyncReplyFree(parsed);
     return result;
-
-by_redis:
-    parsedSyncReplyFree(parsed);
-    return PSYNC_BY_REDIS;
 }
 
 
