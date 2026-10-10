@@ -504,3 +504,80 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
         assert_equal 0 [r zcard geo_key]
     }
 }
+
+# Swap soft-block accounting for GTID-wrapped commands.
+if {$::swap} {
+    start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
+        r config set swap-soft-block-cmd-enabled yes
+
+        test {gtid xadd rejected when soft block enabled} {
+            catch {r gtid A:1 0 xadd s * f v} err
+            assert_match "*not supported by swap*" $err
+            assert_equal 0 [r exists s]
+            assert_equal [get_info_property r Swap swap_cmd_stats reject_blocked] 1
+            assert_equal [get_info_property r Swap swap_cmd_stats allowed_blocked] 0
+            assert_equal [get_info_property r Swap swap_cmd_stats master_allowed] 0
+
+            # A rejected GTID is not recorded as executed, so a retry is counted again.
+            catch {r gtid A:1 0 xadd s * f v} err
+            assert_match "*not supported by swap*" $err
+            assert_equal [get_info_property r Swap swap_cmd_stats reject_blocked] 2
+        }
+
+        test {gtid command without the soft-block flag is not counted} {
+            r gtid A:2 0 set k 1
+            assert_equal 1 [r get k]
+            assert_equal [get_info_property r Swap swap_cmd_stats reject_blocked] 2
+            assert_equal [get_info_property r Swap swap_cmd_stats allowed_blocked] 0
+            assert_equal [get_info_property r Swap swap_cmd_stats master_allowed] 0
+        }
+    }
+
+    start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
+        test {gtid stream write allowed when soft block disabled is counted} {
+            r config set swap-soft-block-cmd-enabled no
+
+            r gtid A:1 0 xadd s * f v
+            assert_equal [r xlen s] 1
+            assert_equal [get_info_property r Swap swap_cmd_stats allowed_blocked] 1
+            assert_equal [get_info_property r Swap swap_cmd_stats reject_blocked] 0
+            assert_equal [get_info_property r Swap swap_cmd_stats master_allowed] 0
+        }
+    }
+
+    start_server {tags {"gtid"} overrides {gtid-enabled yes save ""}} {
+        set master [srv 0 client]
+        set master_host [srv 0 host]
+        set master_port [srv 0 port]
+
+        start_server {tags {"gtid"} overrides {gtid-enabled yes save ""}} {
+            set slave [srv 0 client]
+            $slave slaveof $master_host $master_port
+            wait_for_sync $slave
+
+            test {gtid xadd from master is applied on slave and counted as master_allowed} {
+                $master config set swap-soft-block-cmd-enabled no
+                $slave config set swap-soft-block-cmd-enabled yes
+                $slave config set replica-read-only no
+
+                $master gtid A:1 0 xadd s * f v
+                wait_for_ofs_sync $master $slave
+
+                assert_equal [$slave xlen s] 1
+                assert_equal [get_info_property $slave Swap swap_cmd_stats master_allowed] 1
+                assert_equal [get_info_property $slave Swap swap_cmd_stats reject_blocked] 0
+                assert_equal [get_info_property $slave Swap swap_cmd_stats allowed_blocked] 0
+                assert_equal [get_info_property $master Swap swap_cmd_stats allowed_blocked] 1
+                assert_equal [get_info_property $master Swap swap_cmd_stats reject_blocked] 0
+                assert_equal [get_info_property $master Swap swap_cmd_stats master_allowed] 0
+
+                catch {$slave gtid B:1 0 xadd s * f local} err
+                assert_match "*not supported by swap*" $err
+                assert_equal [get_info_property $slave Swap swap_cmd_stats reject_blocked] 1
+                assert_equal [get_info_property $slave Swap swap_cmd_stats allowed_blocked] 0
+                assert_equal [get_info_property $slave Swap swap_cmd_stats master_allowed] 1
+                assert_equal [$slave xlen s] 1
+            }
+        }
+    }
+}
