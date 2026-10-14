@@ -403,3 +403,132 @@ start_server {overrides {gtid-enabled yes}} {
     }
     }
 }}}
+
+# GTID reaches the swap hard-block check only for commands that are not
+# GTID_NON_DETERMINISM. Relative hash-field expiry commands are rejected
+# earlier and do not increment swap_cmd_stats.
+proc gtid_assert_hard_blocked {r uuid} {
+    set cmds [list \
+        {hpersist h FIELDS 1 f} \
+        {hpexpireat h 2000000000000 FIELDS 1 f} \
+        {xdelex s IDS 1 1-0} \
+        {xackdel s g IDS 1 1-0}]
+    set before [get_info_property $r Swap swap_cmd_stats reject_blocked]
+    set before_gtid [status $r gtid_set]
+    set gno 1
+    foreach args $cmds {
+        catch {$r gtid $uuid:$gno 0 {*}$args} err
+        assert_match "*not supported by swap*" $err
+        incr gno
+    }
+    assert_equal [expr {$before + [llength $cmds]}] \
+        [get_info_property $r Swap swap_cmd_stats reject_blocked]
+    assert_equal $before_gtid [status $r gtid_set]
+    assert_equal v [$r hget h f]
+}
+
+if {$::swap} {
+    start_server {tags {"gtid" "gtid_8x"} overrides {gtid-enabled yes}} {
+        r config set swap-soft-block-cmd-enabled yes
+        r hset h f v
+
+        test {gtid hard blocked commands rejected when soft block enabled} {
+            gtid_assert_hard_blocked r A
+            assert_equal [get_info_property r Swap swap_cmd_stats reject_blocked] 4
+            assert_equal [get_info_property r Swap swap_cmd_stats allowed_blocked] 0
+            assert_equal [get_info_property r Swap swap_cmd_stats master_allowed] 0
+
+            # A rejected GTID is not recorded, so the same gno is counted again.
+            catch {r gtid A:1 0 hpersist h FIELDS 1 f} err
+            assert_match "*not supported by swap*" $err
+            assert_equal [get_info_property r Swap swap_cmd_stats reject_blocked] 5
+            assert_equal v [r hget h f]
+        }
+
+        test {gtid nondeterministic hash expiry is not counted as hard block} {
+            set cmds [list \
+                {hexpire h 100 FIELDS 1 f} \
+                {hpexpire h 100000 FIELDS 1 f} \
+                {hexpireat h 2000000000 FIELDS 1 f} \
+                {hsetex h EX 10 FIELDS 1 f v2} \
+                {hgetex h EX 10 FIELDS 1 f}]
+            set gno 1
+            foreach args $cmds {
+                catch {r gtid N:$gno 0 {*}$args} err
+                assert_match "*nondeterminism in gtid command*" $err
+                incr gno
+            }
+            assert_equal [get_info_property r Swap swap_cmd_stats reject_blocked] 5
+            assert_equal [get_info_property r Swap swap_cmd_stats allowed_blocked] 0
+            assert_equal v [r hget h f]
+        }
+
+        test {gtid command without the hard-block flag is not counted} {
+            set reject [get_info_property r Swap swap_cmd_stats reject_blocked]
+            set allowed [get_info_property r Swap swap_cmd_stats allowed_blocked]
+            set master_allowed [get_info_property r Swap swap_cmd_stats master_allowed]
+            r gtid A:10 0 set k 1
+            assert_equal 1 [r get k]
+            assert_equal $reject [get_info_property r Swap swap_cmd_stats reject_blocked]
+            assert_equal $allowed [get_info_property r Swap swap_cmd_stats allowed_blocked]
+            assert_equal $master_allowed [get_info_property r Swap swap_cmd_stats master_allowed]
+        }
+    }
+
+    start_server {tags {"gtid" "gtid_8x"} overrides {gtid-enabled yes}} {
+        r config set swap-soft-block-cmd-enabled no
+
+        test {gtid hard blocked commands stay rejected when soft block disabled} {
+            r hset h f v
+            r gtid S:1 0 xadd s * f v
+            assert_equal [r xlen s] 1
+            assert_equal [get_info_property r Swap swap_cmd_stats allowed_blocked] 1
+            assert_equal [get_info_property r Swap swap_cmd_stats reject_blocked] 0
+
+            gtid_assert_hard_blocked r A
+            assert_equal [get_info_property r Swap swap_cmd_stats reject_blocked] 4
+            assert_equal [get_info_property r Swap swap_cmd_stats allowed_blocked] 1
+            assert_equal [get_info_property r Swap swap_cmd_stats master_allowed] 0
+            assert_equal [r xlen s] 1
+        }
+    }
+
+    start_server {tags {"gtid" "gtid_8x"} overrides {gtid-enabled yes save ""}} {
+        set master [srv 0 client]
+        set master_host [srv 0 host]
+        set master_port [srv 0 port]
+
+        start_server {tags {"gtid" "gtid_8x"} overrides {gtid-enabled yes save ""}} {
+            set slave [srv 0 client]
+            $slave replicaof $master_host $master_port
+            wait_for_sync $slave
+
+            test {gtid hard blocked command is rejected on master and is not replicated} {
+                $master config set swap-soft-block-cmd-enabled no
+                $slave config set swap-soft-block-cmd-enabled yes
+                $slave config set replica-read-only no
+
+                $master gtid A:1 0 hset h f v
+                wait_for_ofs_sync $master $slave
+                assert_equal v [$slave hget h f]
+
+                catch {$master gtid A:2 0 hpexpireat h 2000000000000 FIELDS 1 f} err
+                assert_match "*not supported by swap*" $err
+                assert_equal [get_info_property $master Swap swap_cmd_stats reject_blocked] 1
+                assert_equal [get_info_property $master Swap swap_cmd_stats allowed_blocked] 0
+                assert_equal [get_info_property $master Swap swap_cmd_stats master_allowed] 0
+                assert_equal v [$master hget h f]
+                assert_equal v [$slave hget h f]
+                assert_equal [get_info_property $slave Swap swap_cmd_stats master_allowed] 0
+                assert_equal [get_info_property $slave Swap swap_cmd_stats reject_blocked] 0
+
+                catch {$slave gtid B:1 0 hpersist h FIELDS 1 f} err
+                assert_match "*not supported by swap*" $err
+                assert_equal [get_info_property $slave Swap swap_cmd_stats reject_blocked] 1
+                assert_equal [get_info_property $slave Swap swap_cmd_stats allowed_blocked] 0
+                assert_equal [get_info_property $slave Swap swap_cmd_stats master_allowed] 0
+                assert_equal v [$slave hget h f]
+            }
+        }
+    }
+}

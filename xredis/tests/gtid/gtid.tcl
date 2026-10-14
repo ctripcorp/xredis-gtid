@@ -490,7 +490,8 @@ start_server {tags {"gtid"} overrides {gtid-enabled yes}} {
     test "GTID accepts canonical HPEXPIREAT on Redis 8+ (no argv rewrite)" {
         # Avoid bare `return` inside test{} — Redis 6 test.tcl's catch treats
         # TCL_RETURN as an unexpected exception.
-        if {[gtid_redis_major_version r] >= 8} {
+        # Swap builds hard-block HPEXPIREAT. That path is covered in gtid/8_x/gtid.tcl.
+        if {[gtid_redis_major_version r] >= 8 && !$::swap} {
             r hset hash_canon f1 v1
             set abs_ms 2000000000000
             assert_equal [r gtid canon:2 0 HPEXPIREAT hash_canon $abs_ms FIELDS 1 f1] 1
