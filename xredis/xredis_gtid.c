@@ -261,6 +261,14 @@ void gtidCommand(client *c) {
             goto end;
         }
     }
+#ifdef ENABLE_SWAP
+    if (swapCmdShouldBlock(c, c->cmd)) {
+        rejectCommandFormat(c,
+            "-ERR Can't execute '%s' command: data type is not supported by swap",
+            c->cmd->name);
+        goto end;
+    }
+#endif
 
     if (unlikely(!(c->flags & CLIENT_MASTER) && (c->id != CLIENT_ID_AOF))) {
         /* server.gtid_embedded* must have been cleared. */
