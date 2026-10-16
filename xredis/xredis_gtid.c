@@ -265,7 +265,7 @@ void gtidCommand(client *c) {
     if (swapCmdShouldBlock(c, c->cmd)) {
         rejectCommandFormat(c,
             "-ERR Can't execute '%s' command: data type is not supported by swap",
-            c->cmd->name);
+            gtidRedisCommandGetName(c->cmd));
         goto end;
     }
 #endif
