@@ -73,7 +73,7 @@ void gtidMockClientInit(client* mock) {
     mock->argc = 0;
     mock->qb_pos = 0;
     mock->flags = 0;
-    mock->bulklen =- 1;
+    mock->bulklen = -1;
     mock->multibulklen = 0;
 }
 
